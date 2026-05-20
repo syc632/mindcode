@@ -1,0 +1,31 @@
+{
+  "name": "mindcode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MindCode desktop MVP for knowledge graphs, spaced repetition, and concept extraction.",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build",
+    "start": "electron .",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "vite": "^7.0.0",
+    "typescript": "^5.5.0",
+    "electron": "^42.1.0",
+    "vitest": "^3.2.0",
+    "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "eslint-plugin-react": "^7.37.0",
+    "globals": "^15.0.0"
+  }
+}
