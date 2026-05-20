@@ -16,8 +16,7 @@ import {
 } from "lucide-react";
 import { categories, seedData } from "./shared/seedData.js";
 import { daysUntil, isDue, sm2 } from "./shared/sm2.js";
-import { extractWithMock } from "./shared/mockExtractor.js";
-import { normalizeMindCodeData, normalizeNode, slugify } from "./shared/schema.js";
+import { normalizeMindCodeData, normalizeNode } from "./shared/schema.js";
 
 const storageKey = "mindcode-browser-data";
 const views = [
@@ -71,13 +70,6 @@ async function saveData(data) {
   }
 
   return { ok: true };
-}
-
-async function extractConcepts({ text, existingLabels }) {
-  if (window.mindcode?.extractConcepts) {
-    return window.mindcode.extractConcepts({ text, existingLabels });
-  }
-  return extractWithMock({ text, existingLabels });
 }
 
 function categoryFor(node) {
@@ -505,8 +497,9 @@ function ReviewView({ dueCards, reviewIndex, onRate }) {
   );
 }
 
-function AddView({ data, onAdd, loading }) {
-  const [input, setInput] = useState("");
+function AddView({ data, onAdd }) {
+  const [nameInput, setNameInput] = useState("");
+  const [definitionInput, setDefinitionInput] = useState("");
   const [query, setQuery] = useState("");
 
   const visibleNodes = useMemo(() => {
@@ -515,11 +508,15 @@ function AddView({ data, onAdd, loading }) {
     return data.nodes.filter((node) => `${node.label} ${node.desc}`.toLowerCase().includes(needle));
   }, [data.nodes, query]);
 
-  async function submit() {
-    const text = input.trim();
-    if (!text) return;
-    const added = await onAdd(text);
-    if (added) setInput("");
+  function submit() {
+    const added = onAdd({
+      label: nameInput.trim(),
+      desc: definitionInput.trim(),
+    });
+    if (added) {
+      setNameInput("");
+      setDefinitionInput("");
+    }
   }
 
   return (
@@ -527,21 +524,34 @@ function AddView({ data, onAdd, loading }) {
       <div className="section-header">
         <div>
           <h2>添加概念</h2>
-          <p>粘贴学习笔记或代码片段，离线提取器会生成候选概念和关系。</p>
+          <p>填写概念名称和定义，创建一张新的复习卡片。</p>
         </div>
         <Database size={22} />
       </div>
 
-      <textarea
-        value={input}
-        onChange={(event) => setInput(event.target.value)}
-        placeholder={"例如：\nPromise.all 接受多个 Promise，所有任务完成后返回结果数组。async/await 可以让异步流程更易读。"}
-      />
+      <div className="add-form">
+        <label>
+          <span>概念名称</span>
+          <input
+            value={nameInput}
+            onChange={(event) => setNameInput(event.target.value)}
+            placeholder="例如：Promise.all"
+          />
+        </label>
+        <label>
+          <span>概念定义</span>
+          <textarea
+            value={definitionInput}
+            onChange={(event) => setDefinitionInput(event.target.value)}
+            placeholder="例如：Promise.all 接受多个 Promise，所有任务完成后返回结果数组。async/await 可以让异步流程更易读。"
+          />
+        </label>
+      </div>
 
       <div className="action-row">
-        <button className="primary-button" disabled={loading || !input.trim()} onClick={submit}>
-          {loading ? <Loader2 size={16} className="spin" /> : <CirclePlus size={16} />}
-          {loading ? "分析中" : "提取概念"}
+        <button className="primary-button" onClick={submit}>
+          <CirclePlus size={16} />
+          添加概念
         </button>
       </div>
 
@@ -572,7 +582,6 @@ export function App() {
   const [reviewIndex, setReviewIndex] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [extracting, setExtracting] = useState(false);
   const [toast, setToast] = useState(null);
   const skipSave = useRef(true);
 
@@ -678,110 +687,87 @@ export function App() {
     }
   };
 
-  const handleAdd = async (text) => {
-    setExtracting(true);
-    try {
-      const result = await extractConcepts({
-        text,
-        existingLabels: data.nodes.map((node) => node.label),
-      });
-      const existingIds = new Set(data.nodes.map((node) => node.id));
-      const existingEdgeIds = new Set(data.edges.map((edge) => edge.id));
-      const newNodes = (result.nodes || [])
-        .map((node, index) => normalizeNode(node, `concept-${Date.now()}-${index}`))
-        .filter((node) => !existingIds.has(node.id));
-      const newIds = new Set(newNodes.map((node) => node.id));
-      const newEdges = (result.edges || [])
-        .map((edge, index) => ({
-          id: edge.id || `edge-${slugify(edge.from)}-${slugify(edge.to)}-${Date.now()}-${index}`,
-          from: slugify(edge.from),
-          to: slugify(edge.to),
-          label: edge.label || "相关",
-        }))
-        .filter(
-          (edge) =>
-            !existingEdgeIds.has(edge.id) &&
-            (existingIds.has(edge.from) || newIds.has(edge.from)) &&
-            (existingIds.has(edge.to) || newIds.has(edge.to)) &&
-            edge.from !== edge.to,
-        );
-
-      if (!newNodes.length) {
-        showToast("没有识别到新的技术概念", "warning");
-        return false;
-      }
-
-      setData((previous) => ({
-        ...previous,
-        nodes: [...previous.nodes, ...newNodes],
-        edges: [...previous.edges, ...newEdges],
-        updatedAt: Date.now(),
-      }));
-      setView("graph");
-      setSelectedId(newNodes[0].id);
-      showToast(`新增 ${newNodes.length} 个概念，${newEdges.length} 条关系`);
-      if (result.warning) showToast(result.warning, "warning");
-      return true;
-    } catch (error) {
-      showToast(`提取失败：${error.message}`, "warning");
+  const handleAdd = ({ label, desc }) => {
+    if (!label) {
+      showToast("无法添加：请填写概念名称", "warning");
       return false;
-    } finally {
-      setExtracting(false);
     }
+
+    const newNode = normalizeNode({ label, desc: desc || undefined }, `concept-${Date.now()}`);
+    if (data.nodes.some((node) => node.id === newNode.id)) {
+      showToast("无法添加：已有同名概念", "warning");
+      return false;
+    }
+
+    setData((previous) => ({
+      ...previous,
+      nodes: [...previous.nodes, newNode],
+      updatedAt: Date.now(),
+    }));
+    setView("graph");
+    setSelectedId(newNode.id);
+    showToast("概念已添加");
+    return true;
   };
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">
-            <Brain size={23} />
+      <header className="app-header">
+        <div className="brand-group">
+          <div className="brand">
+            <div className="brand-mark">
+              <Brain size={22} />
+            </div>
+            <div>
+              <h1>MindCode</h1>
+              <p>编程概念知识图谱与间隔复习工具</p>
+            </div>
           </div>
-          <div>
-            <h1>MindCode</h1>
-            <p>概念图谱与复习队列</p>
-          </div>
+          <span className="count-chip">{data.nodes.length} concepts</span>
         </div>
 
-        <nav className="nav-list" aria-label="主导航">
-          {views.map((item) => {
-            const Icon = item.icon;
-            const count = item.id === "review" ? todayCount(data.nodes) : null;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => {
-                  setView(item.id);
-                  setReviewIndex(0);
-                }}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-                {count ? <strong>{count}</strong> : null}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-stats">
-          <Stat label="概念" value={data.nodes.length} />
-          <Stat label="关系" value={data.edges.length} />
-          <Stat label="今日" value={todayCount(data.nodes)} />
-        </div>
-      </aside>
-
-      <main className="main-panel">
-        <header className="topbar">
-          <div>
-            <p>Desktop MVP</p>
-            <h2>{views.find((item) => item.id === view)?.label}</h2>
-          </div>
+        <div className="header-controls">
+          <nav className="nav-list" aria-label="主导航">
+            {views.map((item) => {
+              const Icon = item.icon;
+              const count = item.id === "review" ? todayCount(data.nodes) : null;
+              return (
+                <button
+                  key={item.id}
+                  className={view === item.id ? "active" : ""}
+                  onClick={() => {
+                    setView(item.id);
+                    setReviewIndex(0);
+                  }}
+                >
+                  <Icon size={16} />
+                  <span>{item.label}</span>
+                  {count ? <strong>{count}</strong> : null}
+                </button>
+              );
+            })}
+          </nav>
           <div className="sync-state">
             {loaded ? null : <Loader2 size={16} className="spin" />}
-            {saving ? "保存中" : loaded ? "已本地保存" : "加载中"}
+            {saving ? "保存中" : loaded ? "已保存" : "加载中"}
           </div>
-        </header>
+        </div>
+      </header>
+
+      <main className="main-panel">
+        <div className="overview-row">
+          <div>
+            <p className="eyebrow">Desktop MVP</p>
+            <h2>{views.find((item) => item.id === view)?.label}</h2>
+          </div>
+          <div>
+            <div className="overview-stats">
+              <Stat label="概念" value={data.nodes.length} />
+              <Stat label="关系" value={data.edges.length} />
+              <Stat label="今日" value={todayCount(data.nodes)} />
+            </div>
+          </div>
+        </div>
 
         {view === "graph" ? (
           <GraphView
@@ -795,7 +781,7 @@ export function App() {
           />
         ) : null}
         {view === "review" ? <ReviewView dueCards={dueCards} reviewIndex={reviewIndex} onRate={handleRate} /> : null}
-        {view === "add" ? <AddView data={data} onAdd={handleAdd} loading={extracting} /> : null}
+        {view === "add" ? <AddView data={data} onAdd={handleAdd} /> : null}
       </main>
 
       <Toast toast={toast} onClear={() => setToast(null)} />
