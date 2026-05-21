@@ -24,7 +24,7 @@ export async function extractWithAnthropic({ text, existingLabels = [], apiKey }
 ${text}
 
 严格只返回 JSON：
-{"nodes":[{"id":"kebab-case-id","label":"概念名称","category":"async|runtime|core|tool|new","desc":"一句话解释"}],"edges":[{"from":"id1","to":"id2","label":"关系描述"}]}`,
+{"nodes":[{"id":"kebab-case-id","label":"概念名称","category":"async|runtime|core|tool|new","desc":"一句话解释","question":"一条适合复习卡正面的提问","answer":"适合复习卡背面的答案","codeExample":"可选的短代码示例"}],"edges":[{"from":"id1","to":"id2","label":"关系描述"}]}`,
         },
       ],
     }),

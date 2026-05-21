@@ -10,18 +10,55 @@ export function slugify(value) {
     .slice(0, 60);
 }
 
+export function normalizeCard(card, node, fallbackId = "card") {
+  const timestamp = Date.now();
+  const nodeLabel = String(node?.label || node?.id || "概念").trim();
+  const desc = String(node?.desc || "暂未添加解释。").trim();
+  const id = slugify(card?.id || fallbackId) || fallbackId;
+
+  return {
+    id,
+    question: String(card?.question || node?.question || `如何解释 ${nodeLabel}？`).trim(),
+    answer: String(card?.answer || node?.answer || desc).trim(),
+    codeExample: String(card?.codeExample || node?.codeExample || "").trim(),
+    ef: Number(card?.ef ?? node?.ef ?? 2.5),
+    interval: Number(card?.interval ?? node?.interval ?? 1),
+    repetitions: Number(card?.repetitions ?? node?.repetitions ?? 0),
+    nextReview: Number(card?.nextReview ?? node?.nextReview ?? timestamp),
+    createdAt: Number(card?.createdAt ?? node?.createdAt ?? timestamp),
+    updatedAt: Number(card?.updatedAt ?? node?.updatedAt ?? timestamp),
+  };
+}
+
 export function normalizeNode(node, fallbackId = "concept") {
   const timestamp = Date.now();
   const id = slugify(node?.id || node?.label || fallbackId) || fallbackId;
+  const label = String(node?.label || id).trim();
+  const desc = String(node?.desc || "暂未添加解释。").trim();
+  const cardSource = Array.isArray(node?.cards) && node.cards.length ? node.cards : [{}];
+  const cards = cardSource.map((card, index) => normalizeCard(card, { ...node, id, label, desc }, `card-${index + 1}`));
+  const firstCard = cards[0];
   return {
     id,
-    label: String(node?.label || id).trim(),
+    label,
     category: node?.category || "new",
-    desc: String(node?.desc || "暂未添加解释。").trim(),
-    ef: Number(node?.ef ?? 2.5),
-    interval: Number(node?.interval ?? 1),
-    repetitions: Number(node?.repetitions ?? 0),
-    nextReview: Number(node?.nextReview ?? timestamp),
+    desc,
+    question: firstCard.question,
+    answer: firstCard.answer,
+    codeExample: firstCard.codeExample,
+    cards,
+    sources: Array.isArray(node?.sources)
+      ? node.sources
+          .map((source) => ({
+            text: String(source?.text || "").trim(),
+            createdAt: Number(source?.createdAt ?? timestamp),
+          }))
+          .filter((source) => source.text)
+      : [],
+    ef: firstCard.ef,
+    interval: firstCard.interval,
+    repetitions: firstCard.repetitions,
+    nextReview: firstCard.nextReview,
     createdAt: Number(node?.createdAt ?? timestamp),
     updatedAt: Number(node?.updatedAt ?? timestamp),
   };
