@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion, useInView, useMotionValue, useSpring, useTransform } from "motion/react";
+import CircularGallery from "./CircularGallery.jsx";
 import {
-  Archive,
-  Brain,
   Check,
   CirclePlus,
-  Database,
-  Download,
   Edit3,
   Filter,
   GitBranch,
+  KeyRound,
   LibraryBig,
   Loader2,
   Link2,
-  Pause,
-  Play,
   Plus,
   RotateCcw,
   Save,
@@ -29,6 +26,7 @@ import { categories, seedData } from "./shared/seedData.js";
 import { extractWithMock } from "./shared/mockExtractor.js";
 import { daysUntil, isDue, sm2 } from "./shared/sm2.js";
 import { normalizeCard, normalizeEdge, normalizeMindCodeData, normalizeNode } from "./shared/schema.js";
+import { formatObsidianNotes, formatObsidianSummaries, sourceTextForExtraction } from "./shared/obsidian.js";
 
 const storageKey = "mindcode-browser-data";
 const views = [
@@ -36,22 +34,21 @@ const views = [
   { id: "library", label: "知识库", icon: LibraryBig },
   { id: "review", label: "复习", icon: RotateCcw },
 ];
-const viewLabels = { graph: "图谱", library: "知识库", review: "复习", add: "添加" };
-const graphViewport = { x: 0, y: 0, width: 900, height: 540 };
+const graphViewport = { x: 0, y: 0, width: 1600, height: 1100 };
 const graphCenter = { x: graphViewport.width / 2, y: graphViewport.height / 2 };
 const curveSpring = 0.14;
 const curveDamping = 0.68;
 const reviewCarouselColors = [
-  "142, 249, 252",
-  "142, 252, 204",
-  "142, 252, 157",
-  "215, 252, 142",
-  "252, 252, 142",
-  "252, 208, 142",
-  "252, 142, 142",
-  "252, 142, 239",
-  "204, 142, 252",
-  "142, 202, 252",
+  "30, 30, 28",
+  "55, 54, 51",
+  "80, 78, 74",
+  "105, 103, 98",
+  "45, 44, 42",
+  "65, 63, 60",
+  "35, 34, 32",
+  "90, 88, 84",
+  "50, 49, 46",
+  "70, 68, 64",
 ];
 
 function naturalCurveTarget(from, to) {
@@ -221,6 +218,57 @@ function Toast({ toast, onClear }) {
   );
 }
 
+function ApiKeyModal({
+  open,
+  status,
+  draft,
+  message,
+  saving,
+  onDraftChange,
+  onSave,
+  onClear,
+  onClose,
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="DeepSeek API Key 设置">
+        <div className="modal-header">
+          <div>
+            <h3>DeepSeek API Key</h3>
+            <p>{status?.hasApiKey ? "已保存本机 API key。" : "Obsidian 导入和 AI 提取需要 DeepSeek API key。"}</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        {message ? <p className="inline-warning">{message}</p> : null}
+        <label>
+          <span>API Key</span>
+          <input
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder={status?.hasApiKey ? "输入新 key 可覆盖已保存配置" : "sk-..."}
+            type="password"
+            autoFocus
+          />
+        </label>
+        <div className="modal-actions">
+          <button className="secondary-button" onClick={onClear} disabled={saving || !status?.hasApiKey}>
+            <Trash2 size={16} />
+            清除
+          </button>
+          <button className="primary-button" onClick={onSave} disabled={saving || !draft.trim()}>
+            {saving ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+            {saving ? "保存中" : "保存"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
   const svgRef = useRef(null);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -230,32 +278,106 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
   const curveSpringsRef = useRef({});
   const curveAnimationRef = useRef(null);
   const draggingRef = useRef(null);
+  const neighborVelocityRef = useRef({});
+  const lastDragPosRef = useRef(null);
   const [positions, setPositions] = useState({});
   const [dragging, setDragging] = useState(null);
   const [panning, setPanning] = useState(false);
   const [viewport, setViewport] = useState(graphViewport);
   const [, setCurveRevision] = useState(0);
+  const [tooltip, setTooltip] = useState(null);
 
   useEffect(() => {
-    const width = 900;
-    const height = 540;
+    const width = 1600;
+    const height = 1100;
     setPositions((previous) => {
       const next = {};
-      nodes.forEach((node, index) => {
+      nodes.forEach((node) => {
         if (previous[node.id]) {
           next[node.id] = previous[node.id];
           return;
         }
-        const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2;
-        const radius = Math.min(width, height) * 0.32;
+        const padding = 120;
         next[node.id] = {
-          x: width / 2 + radius * Math.cos(angle),
-          y: height / 2 + radius * Math.sin(angle),
+          x: padding + Math.random() * (width - padding * 2),
+          y: padding + Math.random() * (height - padding * 2),
         };
       });
+
+      const repulsion = 18000;
+      const attraction = 0.012;
+      const centerGravity = 0.002;
+      const targetLength = 260;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const iterations = 120;
+      const nodeList = nodes.map((node) => ({ id: node.id, ...next[node.id] }));
+
+      for (let iteration = 0; iteration < iterations; iteration += 1) {
+        const forces = Object.fromEntries(nodeList.map((node) => [node.id, { fx: 0, fy: 0 }]));
+
+        for (let i = 0; i < nodeList.length; i += 1) {
+          for (let j = i + 1; j < nodeList.length; j += 1) {
+            const first = nodeList[i];
+            const second = nodeList[j];
+            const deltaX = second.x - first.x || 0.1;
+            const deltaY = second.y - first.y || 0.1;
+            const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 1);
+            const distance = Math.sqrt(distanceSquared);
+            const force = repulsion / distanceSquared;
+            const forceX = (deltaX / distance) * force;
+            const forceY = (deltaY / distance) * force;
+
+            forces[first.id].fx -= forceX;
+            forces[first.id].fy -= forceY;
+            forces[second.id].fx += forceX;
+            forces[second.id].fy += forceY;
+          }
+        }
+
+        edges.forEach((edge) => {
+          const first = nodeList.find((node) => node.id === edge.from);
+          const second = nodeList.find((node) => node.id === edge.to);
+          if (!first || !second) return;
+
+          const deltaX = second.x - first.x;
+          const deltaY = second.y - first.y;
+          const distance = Math.max(Math.hypot(deltaX, deltaY), 1);
+          const stretch = distance - targetLength;
+          const forceX = (deltaX / distance) * stretch * attraction * distance;
+          const forceY = (deltaY / distance) * stretch * attraction * distance;
+
+          forces[first.id].fx += forceX;
+          forces[first.id].fy += forceY;
+          forces[second.id].fx -= forceX;
+          forces[second.id].fy -= forceY;
+        });
+
+        nodeList.forEach((node) => {
+          forces[node.id].fx += (centerX - node.x) * centerGravity;
+          forces[node.id].fy += (centerY - node.y) * centerGravity;
+        });
+
+        const cooling = 1 - iteration / iterations;
+        const maxStep = 60 * cooling + 2;
+        nodeList.forEach((node) => {
+          const force = forces[node.id];
+          const magnitude = Math.hypot(force.fx, force.fy) || 1;
+          const step = Math.min(magnitude, maxStep);
+          node.x += (force.fx / magnitude) * step;
+          node.y += (force.fy / magnitude) * step;
+          node.x = Math.max(80, Math.min(width - 80, node.x));
+          node.y = Math.max(80, Math.min(height - 80, node.y));
+        });
+      }
+
+      nodeList.forEach((node) => {
+        next[node.id] = { x: node.x, y: node.y };
+      });
+
       return next;
     });
-  }, [nodes]);
+  }, [edges, nodes]);
 
   const pointFor = useCallback((nodeId) => positionsRef.current[nodeId] || graphCenter, []);
 
@@ -333,9 +455,12 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
   }, []);
 
   const handlePointerDown = (event, nodeId) => {
+    setTooltip(null);
     const point = getPoint(event);
-    const current = positions[nodeId] || { x: 450, y: 270 };
+    const current = positions[nodeId] || { x: 800, y: 550 };
     dragOffset.current = { x: point.x - current.x, y: point.y - current.y };
+    neighborVelocityRef.current = {};
+    lastDragPosRef.current = null;
     setDragging(nodeId);
     onSelect(nodeId);
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -344,6 +469,7 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
 
   const handleCanvasPointerDown = (event) => {
     if (event.button !== 0 || event.target.closest?.(".graph-node")) return;
+    setTooltip(null);
     panStart.current = { x: event.clientX, y: event.clientY, viewport };
     setPanning(true);
     onSelect(null);
@@ -354,13 +480,55 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
     (event) => {
       if (dragging) {
         const point = getPoint(event);
-        setPositions((previous) => ({
-          ...previous,
-          [dragging]: {
-            x: Math.max(64, Math.min(836, point.x - dragOffset.current.x)),
-            y: Math.max(48, Math.min(492, point.y - dragOffset.current.y)),
-          },
-        }));
+        const newX = Math.max(64, Math.min(1536, point.x - dragOffset.current.x));
+        const newY = Math.max(48, Math.min(1052, point.y - dragOffset.current.y));
+
+        setPositions((previous) => {
+          const next = { ...previous, [dragging]: { x: newX, y: newY } };
+          const last = lastDragPosRef.current || { x: newX, y: newY };
+          const dragDeltaX = newX - last.x;
+          const dragDeltaY = newY - last.y;
+          lastDragPosRef.current = { x: newX, y: newY };
+
+          const neighborIds = new Set();
+          edgesRef.current.forEach((edge) => {
+            if (edge.from === dragging) neighborIds.add(edge.to);
+            if (edge.to === dragging) neighborIds.add(edge.from);
+          });
+
+          const springStrength = 0.18;
+          const damping = 0.72;
+          const dragTransfer = 0.28;
+          const restLength = 260;
+
+          neighborIds.forEach((neighborId) => {
+            if (!next[neighborId]) return;
+
+            const velocity = neighborVelocityRef.current[neighborId] || { vx: 0, vy: 0 };
+            const anchor = next[dragging];
+            const neighbor = next[neighborId];
+            const deltaX = anchor.x - neighbor.x;
+            const deltaY = anchor.y - neighbor.y;
+            const distance = Math.hypot(deltaX, deltaY) || 1;
+            const stretch = distance - restLength;
+
+            velocity.vx = (velocity.vx + dragDeltaX * dragTransfer) * damping;
+            velocity.vy = (velocity.vy + dragDeltaY * dragTransfer) * damping;
+
+            if (Math.abs(stretch) > 10) {
+              velocity.vx += (deltaX / distance) * stretch * springStrength * 0.06;
+              velocity.vy += (deltaY / distance) * stretch * springStrength * 0.06;
+            }
+
+            neighborVelocityRef.current[neighborId] = velocity;
+            next[neighborId] = {
+              x: Math.max(64, Math.min(1536, neighbor.x + velocity.vx)),
+              y: Math.max(48, Math.min(1052, neighbor.y + velocity.vy)),
+            };
+          });
+
+          return next;
+        });
         return;
       }
 
@@ -379,6 +547,8 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
   );
 
   const stopPointerGesture = () => {
+    neighborVelocityRef.current = {};
+    lastDragPosRef.current = null;
     setDragging(null);
     setPanning(false);
     panStart.current = null;
@@ -428,16 +598,12 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
           <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
             <path d="M2 2L8 5L2 8" className="edge-arrow" />
           </marker>
+          <pattern id="dot-grid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+            <circle cx="0" cy="0" r="0.9" fill="rgba(0,0,0,0.13)" />
+          </pattern>
         </defs>
 
-        <g className="grid-lines">
-          {Array.from({ length: 10 }, (_, index) => (
-            <line key={`v-${index}`} x1={index * 100} y1="0" x2={index * 100} y2="540" />
-          ))}
-          {Array.from({ length: 7 }, (_, index) => (
-            <line key={`h-${index}`} x1="0" y1={index * 90} x2="900" y2={index * 90} />
-          ))}
-        </g>
+        <rect x="-2000" y="-2000" width="6000" height="6000" fill="url(#dot-grid)" />
 
         {edges
           .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to))
@@ -464,7 +630,7 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
           })}
 
         {nodes.map((node) => {
-          const point = positions[node.id] || { x: 450, y: 270 };
+          const point = positions[node.id] || { x: 800, y: 550 };
           const category = categoryFor(node);
           const selected = selectedId === node.id;
           const due = nodeIsDue(node);
@@ -474,6 +640,9 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
               key={node.id}
               className={`graph-node ${selected ? "is-selected" : ""}`}
               onPointerDown={(event) => handlePointerDown(event, node.id)}
+              onMouseEnter={(e) => { if (!draggingRef.current) setTooltip({ desc: node.desc, x: e.clientX, y: e.clientY }); }}
+              onMouseLeave={() => setTooltip(null)}
+              onMouseMove={(e) => { if (draggingRef.current) { setTooltip(null); return; } setTooltip(t => t ? { ...t, x: e.clientX, y: e.clientY } : null); }}
             >
               {selected ? (
                 <rect
@@ -503,6 +672,11 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
         })}
       </svg>
 
+      {tooltip && (
+        <div className="node-tooltip" style={{ left: tooltip.x + 14, top: tooltip.y - 10 }}>
+          {tooltip.desc}
+        </div>
+      )}
       <div className="graph-controls" aria-label="图谱缩放">
         <button onClick={() => zoomFromCenter(0.82)} aria-label="放大">
           <ZoomIn size={16} />
@@ -538,6 +712,14 @@ function GraphFilters({ filters, onChange, visibleCount, totalCount }) {
           onChange={(event) => onChange({ ...filters, query: event.target.value })}
           placeholder="搜索概念或解释"
         />
+        <button
+          className="search-clear"
+          type="button"
+          onClick={(e) => { e.preventDefault(); onChange({ ...filters, query: "" }); }}
+          aria-label="清除搜索"
+        >
+          <X size={10} />
+        </button>
       </label>
       <div className="filter-chips">
         {Object.entries(categories).map(([key, category]) => (
@@ -871,21 +1053,6 @@ function GraphView({
 
   return (
     <section className="surface graph-view">
-      <div className="section-header">
-        <div>
-          <h2>知识图谱</h2>
-          <p>拖动节点调整位置，关系线会弹性跟随；点击查看掌握度和复习计划。</p>
-        </div>
-        <div className="legend">
-          {Object.entries(categories).map(([key, category]) => (
-            <span key={key} style={{ color: category.color, background: category.light }}>
-              {category.label}
-            </span>
-          ))}
-          <span className="legend-due">待复习</span>
-        </div>
-      </div>
-
       <GraphFilters
         filters={filters}
         onChange={onFiltersChange}
@@ -920,12 +1087,45 @@ function GraphView({
   );
 }
 
-function LibraryView({ data, desktopDataTools, dataTask, onOpenNode, onDeleteNode, onExportData, onImportData, onBackupData }) {
-  const importRef = useRef(null);
+function LibraryAnimatedRow({ index, node, dueCount, nextReview, isFocused, onOpenNode, onDeleteNode }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, { amount: 0.15, triggerOnce: false });
+  const categoryMeta = categoryFor(node);
+
+  return (
+    <motion.article
+      ref={ref}
+      className={`library-row ${isFocused ? "is-focused" : ""}`}
+      initial={{ opacity: 0, y: 10 }}
+      animate={inView ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
+      transition={{ duration: 0.2, delay: Math.min(index * 0.04, 0.32), ease: [0.23, 1, 0.32, 1] }}
+    >
+      <button className="library-concept" onClick={() => onOpenNode(node.id)}>
+        <strong>{node.label}</strong>
+        <span>{node.desc}</span>
+      </button>
+      <span className="category-badge" style={{ color: categoryMeta.color, background: categoryMeta.light }}>
+        {categoryMeta.label}
+      </span>
+      <span className={dueCount ? "library-due" : "library-next"}>
+        {dueCount ? `${dueCount} 张到期` : daysUntil(nextReview)}
+      </span>
+      <div className="library-actions">
+        <button className="icon-button relation-delete" onClick={() => onDeleteNode(node.id)} aria-label={`删除 ${node.label}`}>
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </motion.article>
+  );
+}
+
+function LibraryView({ data, onOpenNode, onDeleteNode }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [reviewState, setReviewState] = useState("all");
   const [sortBy, setSortBy] = useState("updated");
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const tableRef = useRef(null);
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -961,51 +1161,47 @@ function LibraryView({ data, desktopDataTools, dataTask, onOpenNode, onDeleteNod
       });
   }, [category, data.edges, data.nodes, query, reviewState, sortBy]);
 
+  // 筛选/排序变化时重置焦点
+  useEffect(() => { setFocusedIndex(-1); }, [rows]);
+
+  // 键盘导航
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusedIndex((prev) => Math.min(prev + 1, rows.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusedIndex((prev) => Math.max(prev - 1, 0));
+      } else if (e.key === "Enter" && focusedIndex >= 0) {
+        onOpenNode(rows[focusedIndex].node.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [rows, focusedIndex, onOpenNode]);
+
+  // 滚动到焦点行
+  useEffect(() => {
+    if (focusedIndex < 0 || !tableRef.current) return;
+    const el = tableRef.current.querySelectorAll(".library-row")[focusedIndex];
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focusedIndex]);
+
   return (
     <section className="surface library-view">
-      <div className="section-header">
-        <div>
-          <h2>知识库</h2>
-          <p>用列表管理概念、卡片和复习状态，再回到图谱查看关系。</p>
-        </div>
-        <div className="library-header-actions">
-          <div className="review-count">{rows.length} / {data.nodes.length}</div>
-          <div className="library-data-actions" aria-label="数据操作">
-            <button className="secondary-button compact" onClick={onExportData} disabled={Boolean(dataTask)}>
-              <Download size={14} />
-              导出
-            </button>
-            <button
-              className="secondary-button compact"
-              onClick={() => (desktopDataTools ? onImportData() : importRef.current?.click())}
-              disabled={Boolean(dataTask)}
-            >
-              <Upload size={14} />
-              导入
-            </button>
-            <button className="secondary-button compact" onClick={onBackupData} disabled={Boolean(dataTask)}>
-              <Archive size={14} />
-              备份
-            </button>
-            <input
-              ref={importRef}
-              className="hidden-file-input"
-              type="file"
-              accept="application/json,.json"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) onImportData(file);
-                event.target.value = "";
-              }}
-            />
-          </div>
-        </div>
-      </div>
-
       <div className="library-toolbar">
         <label className="search-box library-search">
           <Search size={15} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索概念、卡片或来源笔记" />
+          <button
+            className="search-clear"
+            type="button"
+            onClick={(e) => { e.preventDefault(); setQuery(""); }}
+            aria-label="清除搜索"
+          >
+            <X size={10} />
+          </button>
         </label>
         <label>
           <span>分类</span>
@@ -1038,42 +1234,25 @@ function LibraryView({ data, desktopDataTools, dataTask, onOpenNode, onDeleteNod
       </div>
 
       {rows.length ? (
-        <div className="library-table">
+        <div className="library-table" ref={tableRef}>
           <div className="library-head">
             <span>概念</span>
             <span>分类</span>
-            <span>卡片</span>
-            <span>关系</span>
             <span>复习</span>
             <span />
           </div>
-          {rows.map(({ node, dueCount, cardCount, relationCount, nextReview }) => {
-            const categoryMeta = categoryFor(node);
-            return (
-              <article key={node.id} className="library-row">
-                <button className="library-concept" onClick={() => onOpenNode(node.id)}>
-                  <strong>{node.label}</strong>
-                  <span>{node.desc}</span>
-                </button>
-                <span className="category-badge" style={{ color: categoryMeta.color, background: categoryMeta.light }}>
-                  {categoryMeta.label}
-                </span>
-                <strong>{cardCount}</strong>
-                <strong>{relationCount}</strong>
-                <span className={dueCount ? "library-due" : "library-next"}>
-                  {dueCount ? `${dueCount} 张到期` : daysUntil(nextReview)}
-                </span>
-                <div className="library-actions">
-                  <button className="secondary-button compact" onClick={() => onOpenNode(node.id)}>
-                    打开
-                  </button>
-                  <button className="icon-button relation-delete" onClick={() => onDeleteNode(node.id)} aria-label={`删除 ${node.label}`}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
+          {rows.map(({ node, dueCount, nextReview }, index) => (
+            <LibraryAnimatedRow
+              key={node.id}
+              index={index}
+              node={node}
+              dueCount={dueCount}
+              nextReview={nextReview}
+              isFocused={focusedIndex === index}
+              onOpenNode={onOpenNode}
+              onDeleteNode={onDeleteNode}
+            />
+          ))}
         </div>
       ) : (
         <div className="library-empty">
@@ -1086,130 +1265,201 @@ function LibraryView({ data, desktopDataTools, dataTask, onOpenNode, onDeleteNod
   );
 }
 
-function ReviewView({ dueCards, onRate }) {
-  const [selectedIndex, setSelectedIndex] = useState(null);
-  const [spinning, setSpinning] = useState(true);
-  const selectedCard = selectedIndex === null ? null : dueCards[selectedIndex];
-  const carouselQuantity = Math.max(dueCards.length, 3);
+// ─── NavDock ──────────────────────────────────────────────────────────────────
 
+function DockNavItem({ item, isActive, mouseX, onClick }) {
+  const ref = useRef(null);
+  const BASE = 46;
+  const MAX  = 68;
+  const DIST = 150;
+  const springCfg = { mass: 0.1, stiffness: 180, damping: 14 };
+  const Icon = item.icon;
+
+  const mouseDistance = useTransform(mouseX, (val) => {
+    const rect = ref.current?.getBoundingClientRect() ?? { x: 0, width: BASE };
+    return val - rect.x - BASE / 2;
+  });
+  const targetSize = useTransform(mouseDistance, [-DIST, 0, DIST], [BASE, MAX, BASE]);
+  const size = useSpring(targetSize, springCfg);
+
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <div className="dock-item-wrap">
+      <AnimatePresence>
+        {hovered && (
+          <motion.span
+            className="dock-item-label"
+            initial={{ opacity: 0, y: 6, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.9 }}
+            transition={{ duration: 0.12 }}
+          >
+            {item.label}
+          </motion.span>
+        )}
+      </AnimatePresence>
+
+      <motion.button
+        ref={ref}
+        style={{ width: size, height: size }}
+        className={`dock-item-btn ${isActive ? "active" : ""}`}
+        onClick={onClick}
+        onHoverStart={() => setHovered(true)}
+        onHoverEnd={() => setHovered(false)}
+        aria-label={item.label}
+      >
+        <Icon size={20} strokeWidth={isActive ? 2.5 : 1.8} />
+        {item.badge ? <span className="dock-item-badge">{item.badge}</span> : null}
+      </motion.button>
+
+      <span className={`dock-item-dot ${isActive ? "visible" : ""}`} />
+    </div>
+  );
+}
+
+function NavDock({ view, setView, reviewCount }) {
+  const mouseX = useMotionValue(Infinity);
+
+  const items = [
+    { id: "graph",   label: "图谱",   icon: GitBranch },
+    { id: "library", label: "知识库", icon: LibraryBig },
+    { id: "review",  label: "复习",   icon: RotateCcw,  badge: reviewCount || null },
+    { id: "add",     label: "添加",   icon: CirclePlus },
+  ];
+
+  return (
+    <div className="nav-dock-outer">
+      <motion.div
+        className="nav-dock-panel"
+        onMouseMove={(e) => mouseX.set(e.pageX)}
+        onMouseLeave={() => mouseX.set(Infinity)}
+      >
+        {items.map((item) => (
+          <DockNavItem
+            key={item.id}
+            item={item}
+            isActive={view === item.id}
+            mouseX={mouseX}
+            onClick={() => setView(item.id)}
+          />
+        ))}
+      </motion.div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ReviewView({ dueCards, onRate }) {
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [flipped, setFlipped] = useState(false);
+
+  // 评分后 dueCards 变化 → 重置选中状态
   useEffect(() => {
-    setSelectedIndex(null);
-    setSpinning(true);
+    setSelectedCard(null);
+    setFlipped(false);
   }, [dueCards]);
 
-  function toggleCard(index) {
-    if (selectedIndex === index) {
-      setSelectedIndex(null);
-      setSpinning(true);
-      return;
-    }
-
-    setSelectedIndex(index);
-    setSpinning(false);
+  function handleSelect(card) {
+    setSelectedCard(card);
+    setFlipped(false);
   }
 
-  function toggleSpin() {
-    setSpinning((value) => {
-      const next = !value;
-      if (next) setSelectedIndex(null);
-      return next;
-    });
-  }
+  const cardColor = selectedCard
+    ? reviewCarouselColors[dueCards.indexOf(selectedCard) % reviewCarouselColors.length]
+    : null;
+  const cardCategory = selectedCard ? categoryFor(selectedCard) : null;
 
   return (
     <section className="surface review-view">
-      <div className="section-header">
-        <div>
-          <h2>知识卡牌</h2>
-          <p>选择一张待复习卡片，翻面后按当前掌握程度评分。</p>
-        </div>
-        <div className="review-count">{dueCards.length ? `${dueCards.length} 张待复习` : "0 张待复习"}</div>
-      </div>
-
       {dueCards.length ? (
-        <div className="review-carousel">
-          <div className="progress-track">
-            <div style={{ width: selectedIndex === null ? "0%" : `${((selectedIndex + 1) / dueCards.length) * 100}%` }} />
-          </div>
-
-          <div className="review-carousel-stage">
+        <div className="review-dome-wrap">
+          <CircularGallery
+            cards={dueCards}
+            onSelect={handleSelect}
+            bend={2}
+            borderRadius={0.06}
+            scrollSpeed={2}
+            scrollEase={0.05}
+          />
+          {/* 点空白取消选中：遮罩盖住画廊，z-index 低于面板 */}
+          {selectedCard && (
             <div
-              className={`review-carousel-inner ${spinning ? "is-spinning" : ""}`}
-              style={{ "--carousel-quantity": carouselQuantity }}
-            >
-              {dueCards.map((card, index) => {
-                const category = categoryFor(card);
-                const color = reviewCarouselColors[index % reviewCarouselColors.length];
-                const selected = selectedIndex === index;
-                return (
-                  <button
-                    key={`${card.nodeId}-${card.id}`}
-                    className={`review-carousel-slot ${selected ? "is-selected is-flipped" : ""}`}
-                    style={{ "--carousel-index": index, "--carousel-color": color }}
-                    onClick={() => toggleCard(index)}
-                    aria-label={`${selected ? "收起" : "翻转"} ${card.question}`}
-                  >
-                    <span className="review-carousel-flipper">
-                      <span className="review-carousel-face review-carousel-front">
-                        <span className="review-carousel-tag" style={{ color: category.color }}>
-                          {category.label}
-                        </span>
-                        <strong>{card.question}</strong>
-                        <small>{card.label}</small>
-                        <i />
-                      </span>
-                      <span className="review-carousel-face review-carousel-back">
-                        <span className="review-carousel-tag" style={{ color: category.color }}>
-                          {category.label}
-                        </span>
-                        <strong>{card.label}</strong>
-                        <span>{card.answer}</span>
-                        {card.codeExample ? <code>{card.codeExample}</code> : null}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+              className="review-dome-backdrop"
+              onClick={() => { setSelectedCard(null); setFlipped(false); }}
+            />
+          )}
 
-          <div className="review-carousel-controls">
-            <button className="secondary-button compact" onClick={toggleSpin}>
-              {spinning ? <Pause size={14} /> : <Play size={14} />}
-              {spinning ? "暂停" : "旋转"}
-            </button>
-            {selectedCard ? (
-              <button
-                className="secondary-button compact"
-                onClick={() => {
-                  setSelectedIndex(null);
-                  setSpinning(true);
-                }}
+          <AnimatePresence>
+            {selectedCard && (
+              <motion.div
+                className="review-dome-panel"
+                initial={{ y: 48, opacity: 0 }}
+                animate={{ y: 0,  opacity: 1 }}
+                exit={{    y: 48, opacity: 0 }}
+                transition={{ duration: 0.28, ease: [0.23, 1, 0.32, 1] }}
               >
-                <X size={14} />
-                取消选中
-              </button>
-            ) : null}
-          </div>
+                {/* 可翻转卡片 */}
+                <button
+                  className={`review-dome-card ${flipped ? "is-flipped" : ""}`}
+                  style={{ "--carousel-color": cardColor }}
+                  onClick={() => setFlipped(v => !v)}
+                  aria-label={flipped ? "显示正面" : "翻到背面"}
+                >
+                  <span className="review-carousel-flipper">
+                    <span className="review-carousel-face review-carousel-front">
+                      <span className="review-carousel-tag" style={{ color: cardCategory?.color }}>
+                        {cardCategory?.label}
+                      </span>
+                      <strong>{selectedCard.question}</strong>
+                      <small>{selectedCard.label}</small>
+                      <i />
+                    </span>
+                    <span className="review-carousel-face review-carousel-back">
+                      <span className="review-carousel-tag" style={{ color: cardCategory?.color }}>
+                        {cardCategory?.label}
+                      </span>
+                      <strong>{selectedCard.label}</strong>
+                      <span>{selectedCard.answer}</span>
+                      {selectedCard.codeExample ? <code>{selectedCard.codeExample}</code> : null}
+                    </span>
+                  </span>
+                </button>
 
-          {selectedCard ? (
-            <div className="review-rate-panel">
-              <strong>{selectedCard.question}</strong>
-              <p>{selectedCard.label} 的掌握程度如何？</p>
-              <div className="review-rate-grid">
-                {[
-                  { quality: 1, label: "忘了", tone: "lost" },
-                  { quality: 2, label: "模糊", tone: "fuzzy" },
-                  { quality: 4, label: "基本会", tone: "good" },
-                  { quality: 5, label: "掌握", tone: "mastered" },
-                ].map((item) => (
-                  <button key={item.quality} className={`review-rate-button ${item.tone}`} onClick={() => onRate(selectedCard, item.quality)}>
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
+                {/* 评分面板：翻到背面后出现 */}
+                <AnimatePresence>
+                  {flipped && (
+                    <motion.div
+                      className="review-rate-panel"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{    opacity: 0, y: 10 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <p>{selectedCard.label} 的掌握程度如何？</p>
+                      <div className="review-rate-grid">
+                        {[
+                          { quality: 1, label: "忘了",   tone: "lost"     },
+                          { quality: 2, label: "模糊",   tone: "fuzzy"    },
+                          { quality: 4, label: "基本会", tone: "good"     },
+                          { quality: 5, label: "掌握",   tone: "mastered" },
+                        ].map((item) => (
+                          <button
+                            key={item.quality}
+                            className={`review-rate-button ${item.tone}`}
+                            onClick={() => onRate(selectedCard, item.quality)}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       ) : (
         <div className="empty-state">
@@ -1235,12 +1485,82 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   const [extractError, setExtractError] = useState("");
   const [preview, setPreview] = useState(null);
   const [query, setQuery] = useState("");
+  const [obsidianVault, setObsidianVault] = useState(null);
+  const [readingObsidian, setReadingObsidian] = useState(false);
+  const [summarizingObsidian, setSummarizingObsidian] = useState(false);
+  const [obsidianSourceText, setObsidianSourceText] = useState("");
+  const [aiConfigStatus, setAiConfigStatus] = useState(null);
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [apiKeyMessage, setApiKeyMessage] = useState("");
+  const [savingApiKey, setSavingApiKey] = useState(false);
 
   const visibleNodes = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return data.nodes;
     return data.nodes.filter((node) => `${node.label} ${node.desc}`.toLowerCase().includes(needle));
   }, [data.nodes, query]);
+
+  useEffect(() => {
+    if (!window.mindcode?.getAiConfigStatus) return;
+
+    window.mindcode
+      .getAiConfigStatus()
+      .then((status) => setAiConfigStatus(status))
+      .catch(() => setAiConfigStatus(null));
+  }, []);
+
+  function openApiKeyModal(message = "") {
+    setApiKeyDraft("");
+    setApiKeyMessage(message);
+    setApiKeyModalOpen(true);
+  }
+
+  function errorNeedsApiKey(error) {
+    return String(error?.message || error || "").includes("DeepSeek API key");
+  }
+
+  async function refreshAiConfigStatus() {
+    if (!window.mindcode?.getAiConfigStatus) return null;
+    const status = await window.mindcode.getAiConfigStatus();
+    setAiConfigStatus(status);
+    return status;
+  }
+
+  async function saveApiKey() {
+    if (!window.mindcode?.saveAiApiKey) return;
+
+    setSavingApiKey(true);
+    setApiKeyMessage("");
+    try {
+      const status = await window.mindcode.saveAiApiKey({ apiKey: apiKeyDraft });
+      setAiConfigStatus(status);
+      setApiKeyDraft("");
+      setApiKeyModalOpen(false);
+      onToast("DeepSeek API key 已保存");
+    } catch (error) {
+      setApiKeyMessage(`保存失败：${error.message}`);
+    } finally {
+      setSavingApiKey(false);
+    }
+  }
+
+  async function clearApiKey() {
+    if (!window.mindcode?.clearAiApiKey) return;
+
+    setSavingApiKey(true);
+    setApiKeyMessage("");
+    try {
+      const status = await window.mindcode.clearAiApiKey();
+      setAiConfigStatus(status);
+      setApiKeyDraft("");
+      onToast("DeepSeek API key 已清除", "warning");
+    } catch (error) {
+      setApiKeyMessage(`清除失败：${error.message}`);
+    } finally {
+      setSavingApiKey(false);
+    }
+  }
 
   function submit() {
     const added = onAdd(manualDraft);
@@ -1278,9 +1598,107 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     }));
   }
 
+  async function chooseObsidianVault() {
+    if (!window.mindcode?.readObsidianVault) return;
+
+    setExtractError("");
+    const status = aiConfigStatus || (await refreshAiConfigStatus().catch(() => null));
+    if (!status?.hasApiKey) {
+      openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
+      return;
+    }
+
+    setReadingObsidian(true);
+    try {
+      const result = await window.mindcode.readObsidianVault();
+      if (result?.canceled) return;
+      const notes = (result?.notes || []).map((note, index) => ({ ...note, selected: index < 3 }));
+
+      setObsidianVault({ ...result, notes });
+      setObsidianSourceText("");
+      setPreview(null);
+
+      if (!notes.length) {
+        onToast("这个 Vault 里没有可读取的 Markdown 笔记。", "warning");
+        return;
+      }
+
+      if (result.warning) onToast(result.warning, "warning");
+      else onToast(`已读取 ${notes.length} 篇 Obsidian 笔记`);
+    } catch (error) {
+      if (errorNeedsApiKey(error)) {
+        openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
+      } else {
+        setExtractError(`读取 Obsidian 失败：${error.message}`);
+      }
+    } finally {
+      setReadingObsidian(false);
+    }
+  }
+
+  function toggleObsidianNote(notePath, selected) {
+    setObsidianVault((current) => ({
+      ...current,
+      notes: current.notes.map((note) => (note.path === notePath ? { ...note, selected } : note)),
+    }));
+  }
+
+  function loadSelectedObsidianNotes() {
+    return summarizeSelectedObsidianNotes();
+  }
+
+  async function summarizeSelectedObsidianNotes() {
+    const selectedNotes = obsidianVault?.notes.filter((note) => note.selected) || [];
+    const rawSourceText = formatObsidianNotes(selectedNotes);
+    if (!rawSourceText) {
+      setExtractError("至少选择一篇有内容的 Obsidian 笔记。");
+      return;
+    }
+
+    if (!window.mindcode?.summarizeObsidianNotes) {
+      setExtractError("当前环境不支持 Obsidian AI 总结。");
+      return;
+    }
+
+    setExtractError("");
+    setSummarizingObsidian(true);
+    try {
+      const result = await window.mindcode.summarizeObsidianNotes({ notes: selectedNotes });
+      const summariesByPath = new Map((result.notes || []).map((note) => [note.path, note.summary]));
+      const summarizedNotes = selectedNotes
+        .map((note) => ({
+          path: note.path,
+          summary: summariesByPath.get(note.path) || "",
+        }))
+        .filter((note) => note.summary);
+      const summaryText = formatObsidianSummaries(summarizedNotes);
+
+      if (!summaryText) {
+        setExtractError("AI 没有返回可用的 Obsidian 摘要。");
+        return;
+      }
+
+      setNoteInput(summaryText);
+      setObsidianSourceText(rawSourceText);
+      setPreview(null);
+      onToast(`已总结 ${summarizedNotes.length} 篇 Obsidian 笔记`);
+    } catch (error) {
+      if (errorNeedsApiKey(error)) {
+        openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
+      } else {
+        setExtractError(`Obsidian 总结失败：${error.message}`);
+      }
+    } finally {
+      setSummarizingObsidian(false);
+    }
+  }
+
   async function buildPreview() {
-    const sourceText = noteInput.trim();
-    if (!sourceText) {
+    const { extractionText, sourceText } = sourceTextForExtraction({
+      summaryText: noteInput,
+      rawSourceText: obsidianSourceText,
+    });
+    if (!extractionText) {
       setExtractError("先粘贴笔记或代码片段。");
       return;
     }
@@ -1289,7 +1707,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     setExtracting(true);
     try {
       const result = await extractConcepts(
-        sourceText,
+        extractionText,
         data.nodes.map((node) => node.label),
       );
       const existingById = new Map(data.nodes.map((node) => [node.id, node]));
@@ -1315,6 +1733,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
         provider: result.provider || "mock",
         warning: result.warning || "",
         sourceText,
+        summaryText: extractionText,
         nodes,
         edges,
       });
@@ -1339,24 +1758,49 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     }
   }
 
+  const [previewStep, setPreviewStep] = useState(0);
+  const [cardFlipped, setCardFlipped] = useState(false);
+
   const previewEndpointOptions = preview ? [...data.nodes, ...preview.nodes] : [];
   const previewWillWrite = preview?.nodes.some((node) => node.selected || node.mergeMode === "append-card");
+  const selectedObsidianCount = obsidianVault?.notes.filter((note) => note.selected).length || 0;
+  const providerLabel = aiConfigStatus?.hasApiKey ? "DeepSeek" : "API Key";
+
+  const manualHasLabel = manualDraft.label.trim().length > 0;
+  const manualHasDesc = manualDraft.desc.trim().length > 0;
+  const manualHasQuestion = manualDraft.question.trim().length > 0;
+  const previewQuestion = manualDraft.question.trim() || (manualHasLabel ? `如何解释 ${manualDraft.label.trim()}？` : "");
+  const previewAnswer = manualDraft.answer.trim() || manualDraft.desc.trim();
+
+  function goToPreviewStep(index) {
+    setPreviewStep(Math.max(0, Math.min(index, (preview?.nodes.length ?? 0))));
+  }
+
+  const currentPreviewNode = preview?.nodes[previewStep] ?? null;
+  const isOnEdgesStep = preview && previewStep >= preview.nodes.length;
 
   return (
     <section className="surface add-view">
-      <div className="section-header">
-        <div>
-          <h2>添加与提取</h2>
-          <p>新内容先变成可校正的卡片和关系草稿，确认后再写入图谱。</p>
-        </div>
-        <Database size={22} />
-      </div>
-
       <div className="add-workbench">
         <div className="add-pane">
           <div className="pane-header">
             <h3>从笔记提取</h3>
-            <span>先预览后入库</span>
+            <div className="pane-actions">
+              {window.mindcode?.getAiConfigStatus ? (
+                <button className="secondary-button compact" onClick={() => openApiKeyModal()} disabled={savingApiKey}>
+                  <KeyRound size={14} />
+                  {providerLabel}
+                </button>
+              ) : null}
+              {window.mindcode?.readObsidianVault ? (
+                <button className="secondary-button compact" onClick={chooseObsidianVault} disabled={readingObsidian}>
+                  {readingObsidian ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
+                  {readingObsidian ? "读取中" : "Obsidian"}
+                </button>
+              ) : (
+                <span>先预览后入库</span>
+              )}
+            </div>
           </div>
           <label>
             <span>笔记或代码</span>
@@ -1366,9 +1810,46 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
               placeholder="粘贴一段学习笔记。离线时会使用 mock 提取器，仍然先生成草稿供你确认。"
             />
           </label>
+          {obsidianVault ? (
+            <section className="obsidian-sync" aria-label="Obsidian 同步">
+              <div className="obsidian-sync-summary">
+                <strong>{obsidianVault.vaultName}</strong>
+                <span>
+                  已选 {selectedObsidianCount} / {obsidianVault.notes.length}
+                </span>
+              </div>
+              <div className="obsidian-note-list">
+                {obsidianVault.notes.map((note) => (
+                  <label key={note.path} className="obsidian-note-row">
+                    <input
+                      type="checkbox"
+                      checked={note.selected}
+                      onChange={(event) => toggleObsidianNote(note.path, event.target.checked)}
+                    />
+                    <span>
+                      <strong>{note.path}</strong>
+                      <small>
+                        {note.content.length} 字符{note.truncated ? " · 已截断" : ""}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="obsidian-sync-actions">
+                <button
+                  className="secondary-button compact"
+                  onClick={loadSelectedObsidianNotes}
+                  disabled={!selectedObsidianCount || summarizingObsidian}
+                >
+                  {summarizingObsidian ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
+                  {summarizingObsidian ? "总结中" : "总结所选笔记"}
+                </button>
+              </div>
+            </section>
+          ) : null}
           {extractError ? <p className="inline-warning">{extractError}</p> : null}
           <div className="action-row">
-            <button className="primary-button" onClick={buildPreview} disabled={extracting || !noteInput.trim()}>
+            <button className="primary-button ai-action" onClick={buildPreview} disabled={extracting || !noteInput.trim()}>
               {extracting ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
               {extracting ? "提取中" : "生成草稿"}
             </button>
@@ -1380,51 +1861,119 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
             <h3>手动建卡</h3>
             <span>直接创建</span>
           </div>
-          <div className="manual-grid">
+          <div className="manual-fields">
             <label>
               <span>概念名称</span>
               <input
                 value={manualDraft.label}
                 onChange={(event) => setManualDraft({ ...manualDraft, label: event.target.value })}
                 placeholder="例如：Promise.all"
+                autoComplete="off"
               />
             </label>
-            <label>
-              <span>解释</span>
-              <textarea
-                value={manualDraft.desc}
-                onChange={(event) => setManualDraft({ ...manualDraft, desc: event.target.value })}
-                placeholder="一句话说明这个概念。"
-              />
-            </label>
-            <label>
-              <span>复习问题</span>
-              <textarea
-                value={manualDraft.question}
-                onChange={(event) => setManualDraft({ ...manualDraft, question: event.target.value })}
-                placeholder="Promise.all 在什么情况下 reject？"
-              />
-            </label>
-            <label>
-              <span>卡片答案</span>
-              <textarea
-                value={manualDraft.answer}
-                onChange={(event) => setManualDraft({ ...manualDraft, answer: event.target.value })}
-                placeholder="用于复习卡背面。留空时使用解释。"
-              />
-            </label>
-            <label>
-              <span>代码示例</span>
-              <textarea
-                className="code-input"
-                value={manualDraft.codeExample}
-                onChange={(event) => setManualDraft({ ...manualDraft, codeExample: event.target.value })}
-                placeholder="可选。"
-              />
-            </label>
+
+            <AnimatePresence initial={false}>
+              {manualHasLabel && (
+                <motion.label
+                  key="desc"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <span>解释</span>
+                  <textarea
+                    value={manualDraft.desc}
+                    onChange={(event) => setManualDraft({ ...manualDraft, desc: event.target.value })}
+                    placeholder="一句话说明这个概念。"
+                  />
+                </motion.label>
+              )}
+
+              {manualHasDesc && (
+                <motion.div
+                  key="qa"
+                  className="manual-qa"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <label>
+                    <span>复习问题 <em>可选</em></span>
+                    <textarea
+                      value={manualDraft.question}
+                      onChange={(event) => setManualDraft({ ...manualDraft, question: event.target.value })}
+                      placeholder={`如何解释 ${manualDraft.label.trim()}？`}
+                    />
+                  </label>
+                  <label>
+                    <span>卡片答案 <em>可选</em></span>
+                    <textarea
+                      value={manualDraft.answer}
+                      onChange={(event) => setManualDraft({ ...manualDraft, answer: event.target.value })}
+                      placeholder="留空时使用解释。"
+                    />
+                  </label>
+                </motion.div>
+              )}
+
+              {manualHasQuestion && (
+                <motion.label
+                  key="code"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <span>代码示例 <em>可选</em></span>
+                  <textarea
+                    className="code-input"
+                    value={manualDraft.codeExample}
+                    onChange={(event) => setManualDraft({ ...manualDraft, codeExample: event.target.value })}
+                    placeholder="最短可运行示例"
+                  />
+                </motion.label>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {manualHasLabel && (
+                <motion.div
+                  key="preview-card"
+                  className="manual-card-preview"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <div className="manual-card-preview-label">卡片预览</div>
+                  <button
+                    className={`manual-flip-card ${cardFlipped ? "is-flipped" : ""}`}
+                    onClick={() => setCardFlipped((v) => !v)}
+                    aria-label={cardFlipped ? "显示正面" : "翻到背面"}
+                  >
+                    <span className="manual-flip-inner">
+                      <span className="manual-flip-face manual-flip-front">
+                        <strong>{previewQuestion || "复习问题将显示在这里"}</strong>
+                        <small>{manualDraft.label.trim()}</small>
+                        <i />
+                      </span>
+                      <span className="manual-flip-face manual-flip-back">
+                        <strong>{manualDraft.label.trim()}</strong>
+                        <span>{previewAnswer || "答案将显示在这里"}</span>
+                        {manualDraft.codeExample.trim() ? <code>{manualDraft.codeExample.trim()}</code> : null}
+                      </span>
+                    </span>
+                  </button>
+                  <div className="manual-card-hint">{cardFlipped ? "正面" : "背面"} · 点击翻转</div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
+
           <div className="action-row">
-            <button className="secondary-button" onClick={submit} disabled={!manualDraft.label.trim()}>
+            <button className="primary-button" onClick={submit} disabled={!manualDraft.label.trim()}>
               <CirclePlus size={16} />
               创建卡片
             </button>
@@ -1436,127 +1985,169 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
         <div className="extraction-preview">
           <div className="pane-header">
             <h3>提取草稿</h3>
-            <span>{preview.provider === "anthropic" ? "Anthropic" : "离线提取器"}</span>
-          </div>
-          {preview.warning ? <p className="inline-warning">{preview.warning}</p> : null}
-          <div className="preview-section">
-            <strong>概念</strong>
-            <div className="preview-grid">
-              {preview.nodes.map((node) => (
-                <article key={node.id} className={`preview-item ${node.duplicate ? "is-duplicate" : ""}`}>
-                  <label className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={node.selected}
-                      disabled={node.duplicate && node.mergeMode === "append-card"}
-                      onChange={(event) => patchPreviewNode(node.id, { selected: event.target.checked })}
-                    />
-                    <span>{node.duplicate ? "与已有概念冲突，确认前先改名" : "写入图谱"}</span>
-                  </label>
-                  {node.duplicate ? (
-                    <label className="duplicate-action">
-                      <span>重复建议</span>
-                      <select
-                        value={node.mergeMode}
-                        onChange={(event) =>
-                          patchPreviewNode(node.id, {
-                            mergeMode: event.target.value,
-                            selected: event.target.value === "new" ? node.selected : false,
-                          })
-                        }
-                      >
-                        <option value="skip">跳过重复概念</option>
-                        <option value="append-card">向已有概念添加卡片</option>
-                        <option value="new">改名后新建节点</option>
-                      </select>
-                    </label>
-                  ) : null}
-                  <div className="preview-fields">
-                    <input value={node.label} onChange={(event) => patchPreviewNode(node.id, { label: event.target.value })} />
-                    <select value={node.category} onChange={(event) => patchPreviewNode(node.id, { category: event.target.value })}>
-                      {Object.entries(categories).map(([key, item]) => (
-                        <option key={key} value={key}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                    <textarea value={node.desc} onChange={(event) => patchPreviewNode(node.id, { desc: event.target.value })} />
-                    <textarea
-                      value={node.question}
-                      onChange={(event) => patchPreviewNode(node.id, { question: event.target.value })}
-                      placeholder="复习问题"
-                    />
-                    <textarea
-                      value={node.answer}
-                      onChange={(event) => patchPreviewNode(node.id, { answer: event.target.value })}
-                      placeholder="卡片答案"
-                    />
-                  </div>
-                </article>
-              ))}
+            <div className="preview-stepper-nav">
+              <span className="preview-step-count">
+                {isOnEdgesStep ? "关系" : `${previewStep + 1} / ${preview.nodes.length}`}
+              </span>
+              <button
+                className="icon-button"
+                onClick={() => goToPreviewStep(previewStep - 1)}
+                disabled={previewStep === 0}
+                aria-label="上一个"
+              >
+                ‹
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => goToPreviewStep(previewStep + 1)}
+                disabled={isOnEdgesStep}
+                aria-label="下一个"
+              >
+                ›
+              </button>
             </div>
           </div>
-          <div className="preview-section">
-            <strong>关系</strong>
-            {preview.edges.length ? (
-              <div className="preview-edge-list">
-                {preview.edges.map((edge) => (
-                  <div key={edge.id} className="preview-edge">
-                    <input
-                      type="checkbox"
-                      checked={edge.selected}
-                      onChange={(event) => patchPreviewEdge(edge.id, { selected: event.target.checked })}
-                      aria-label={`写入关系 ${edge.label}`}
-                    />
-                    <select value={edge.from} onChange={(event) => patchPreviewEdge(edge.id, { from: event.target.value })}>
-                      {previewEndpointOptions.map((node, index) => (
-                        <option key={`from-${edge.id}-${node.id}-${index}`} value={node.id}>
-                          {node.label}
-                        </option>
-                      ))}
-                    </select>
-                    <input value={edge.label} onChange={(event) => patchPreviewEdge(edge.id, { label: event.target.value })} />
-                    <select value={edge.to} onChange={(event) => patchPreviewEdge(edge.id, { to: event.target.value })}>
-                      {previewEndpointOptions.map((node, index) => (
-                        <option key={`to-${edge.id}-${node.id}-${index}`} value={node.id}>
-                          {node.label}
-                        </option>
-                      ))}
+          {preview.warning ? <p className="inline-warning">{preview.warning}</p> : null}
+
+          <AnimatePresence mode="wait">
+            {!isOnEdgesStep && currentPreviewNode ? (
+              <motion.div
+                key={`node-${previewStep}`}
+                className={`preview-step-node ${currentPreviewNode.duplicate ? "is-duplicate" : ""}`}
+                initial={{ opacity: 0, x: 18 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -18 }}
+                transition={{ duration: 0.16 }}
+              >
+                {currentPreviewNode.duplicate ? (
+                  <div className="preview-duplicate-banner">
+                    <span>与已有概念重名</span>
+                    <select
+                      value={currentPreviewNode.mergeMode}
+                      onChange={(event) =>
+                        patchPreviewNode(currentPreviewNode.id, {
+                          mergeMode: event.target.value,
+                          selected: event.target.value === "new" ? currentPreviewNode.selected : false,
+                        })
+                      }
+                    >
+                      <option value="skip">跳过</option>
+                      <option value="append-card">附加卡片到已有概念</option>
+                      <option value="new">改名后新建</option>
                     </select>
                   </div>
-                ))}
-              </div>
+                ) : null}
+                <div className="preview-fields">
+                  <label>
+                    <span>名称</span>
+                    <input value={currentPreviewNode.label} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { label: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>分类</span>
+                    <select value={currentPreviewNode.category} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { category: event.target.value })}>
+                      {Object.entries(categories).map(([key, item]) => (
+                        <option key={key} value={key}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>解释</span>
+                    <textarea value={currentPreviewNode.desc} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { desc: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>复习问题</span>
+                    <textarea value={currentPreviewNode.question} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { question: event.target.value })} placeholder="复习问题" />
+                  </label>
+                  <label>
+                    <span>卡片答案</span>
+                    <textarea value={currentPreviewNode.answer} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { answer: event.target.value })} placeholder="卡片答案" />
+                  </label>
+                </div>
+                <div className="preview-step-actions">
+                  <button
+                    className={`preview-decision-btn ${currentPreviewNode.selected || currentPreviewNode.mergeMode === "append-card" ? "is-accept" : ""}`}
+                    onClick={() => {
+                      patchPreviewNode(currentPreviewNode.id, { selected: true });
+                      goToPreviewStep(previewStep + 1);
+                    }}
+                  >
+                    <Check size={15} />
+                    接受
+                  </button>
+                  <button
+                    className={`preview-decision-btn ${!currentPreviewNode.selected && currentPreviewNode.mergeMode !== "append-card" ? "is-skip" : ""}`}
+                    onClick={() => {
+                      patchPreviewNode(currentPreviewNode.id, { selected: false, mergeMode: "skip" });
+                      goToPreviewStep(previewStep + 1);
+                    }}
+                  >
+                    <X size={15} />
+                    跳过
+                  </button>
+                </div>
+              </motion.div>
             ) : (
-              <p className="relation-empty">这次没有提取到关系，入库后可在节点详情里手动连接。</p>
+              <motion.div
+                key="edges"
+                className="preview-edges-step"
+                initial={{ opacity: 0, x: 18 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -18 }}
+                transition={{ duration: 0.16 }}
+              >
+                <strong className="preview-step-label">关系 ({preview.edges.length})</strong>
+                {preview.edges.length ? (
+                  <div className="preview-edge-list">
+                    {preview.edges.map((edge) => (
+                      <div key={edge.id} className="preview-edge">
+                        <input
+                          type="checkbox"
+                          checked={edge.selected}
+                          onChange={(event) => patchPreviewEdge(edge.id, { selected: event.target.checked })}
+                          aria-label={`写入关系 ${edge.label}`}
+                        />
+                        <select value={edge.from} onChange={(event) => patchPreviewEdge(edge.id, { from: event.target.value })}>
+                          {previewEndpointOptions.map((node, index) => (
+                            <option key={`from-${edge.id}-${node.id}-${index}`} value={node.id}>{node.label}</option>
+                          ))}
+                        </select>
+                        <input value={edge.label} onChange={(event) => patchPreviewEdge(edge.id, { label: event.target.value })} />
+                        <select value={edge.to} onChange={(event) => patchPreviewEdge(edge.id, { to: event.target.value })}>
+                          {previewEndpointOptions.map((node, index) => (
+                            <option key={`to-${edge.id}-${node.id}-${index}`} value={node.id}>{node.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="relation-empty">没有提取到关系，入库后可在节点详情里手动连接。</p>
+                )}
+                <div className="preview-actions">
+                  <button className="secondary-button" onClick={() => { setPreview(null); setPreviewStep(0); }}>
+                    丢弃草稿
+                  </button>
+                  <button className="primary-button" onClick={() => { acceptPreview(); setPreviewStep(0); }} disabled={!previewWillWrite}>
+                    <Save size={16} />
+                    确认写入
+                  </button>
+                </div>
+              </motion.div>
             )}
-          </div>
-          <div className="preview-actions">
-            <button className="secondary-button" onClick={() => setPreview(null)}>
-              丢弃草稿
-            </button>
-            <button className="primary-button" onClick={acceptPreview} disabled={!previewWillWrite}>
-              <Save size={16} />
-              确认写入
-            </button>
-          </div>
+          </AnimatePresence>
         </div>
       ) : null}
-
-      <div className="concept-list-header">
-        <strong>已有概念</strong>
-        <label className="search-box">
-          <Search size={15} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" />
-        </label>
-      </div>
-
-      <div className="concept-list">
-        {visibleNodes.map((node) => (
-          <button key={node.id} style={{ color: categoryFor(node).color, background: categoryFor(node).light }}>
-            {node.label}
-          </button>
-        ))}
-      </div>
+      <ApiKeyModal
+        open={apiKeyModalOpen}
+        status={aiConfigStatus}
+        draft={apiKeyDraft}
+        message={apiKeyMessage}
+        saving={savingApiKey}
+        onDraftChange={setApiKeyDraft}
+        onSave={saveApiKey}
+        onClear={clearApiKey}
+        onClose={() => setApiKeyModalOpen(false)}
+      />
     </section>
   );
 }
@@ -1910,62 +2501,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="brand-group">
-          <div className="brand">
-            <div className="brand-mark">
-              <Brain size={22} />
-            </div>
-            <div>
-              <h1>MindCode</h1>
-              <p>编程概念知识图谱与间隔复习工具</p>
-            </div>
-          </div>
-          <span className="count-chip">{data.nodes.length} concepts</span>
-        </div>
-
-        <div className="header-controls">
-          <nav className="nav-list" aria-label="主导航">
-            {views.map((item) => {
-              const Icon = item.icon;
-              const count = item.id === "review" ? todayCount(data.nodes) : null;
-              return (
-                <button
-                  key={item.id}
-                  className={view === item.id ? "active" : ""}
-                  onClick={() => {
-                    setView(item.id);
-                  }}
-                >
-                  <Icon size={16} />
-                  <span>{item.label}</span>
-                  {count ? <strong>{count}</strong> : null}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="sync-state">
-            {loaded ? null : <Loader2 size={16} className="spin" />}
-            {saving ? "保存中" : loaded ? "已保存" : "加载中"}
-          </div>
-        </div>
-      </header>
-
       <main className="main-panel">
-        <div className="overview-row">
-          <div>
-            <p className="eyebrow">Desktop MVP</p>
-            <h2>{viewLabels[view]}</h2>
-          </div>
-          <div>
-            <div className="overview-stats">
-              <Stat label="概念" value={data.nodes.length} />
-              <Stat label="关系" value={data.edges.length} />
-              <Stat label="今日" value={todayCount(data.nodes)} />
-            </div>
-          </div>
-        </div>
-
         {view === "graph" ? (
           <GraphView
             data={data}
@@ -1983,13 +2519,8 @@ export function App() {
         {view === "library" ? (
           <LibraryView
             data={data}
-            desktopDataTools={Boolean(window.mindcode?.importData)}
-            dataTask={dataTask}
             onOpenNode={openNodeInGraph}
             onDeleteNode={deleteNode}
-            onExportData={exportDataAction}
-            onImportData={importDataAction}
-            onBackupData={backupDataAction}
           />
         ) : null}
         {view === "review" ? <ReviewView dueCards={dueCards} onRate={handleRate} /> : null}
@@ -1998,10 +2529,7 @@ export function App() {
         ) : null}
       </main>
 
-      <button className={`add-fab ${view === "add" ? "active" : ""}`} onClick={() => setView("add")}>
-        <CirclePlus size={19} />
-        <span>添加新概念</span>
-      </button>
+      <NavDock view={view} setView={setView} reviewCount={todayCount(data.nodes)} />
       <Toast toast={toast} onClear={() => setToast(null)} />
     </div>
   );
