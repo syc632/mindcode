@@ -1,11 +1,11 @@
 const now = () => Date.now();
 
 export const categories = {
-  async: { label: "异步", color: "#afa9ec", light: "#26215c" },
-  runtime: { label: "运行时", color: "#5dcaa5", light: "#04342c" },
-  core: { label: "核心", color: "#f0997b", light: "#4a1b0c" },
-  tool: { label: "工具", color: "#f0959a", light: "#501313" },
-  new: { label: "新概念", color: "#ef9f27", light: "#412402" },
+  async: { label: "异步", color: "#444442", light: "#f0efed" },
+  runtime: { label: "运行时", color: "#444442", light: "#f0efed" },
+  core: { label: "核心", color: "#444442", light: "#f0efed" },
+  tool: { label: "工具", color: "#444442", light: "#f0efed" },
+  new: { label: "新概念", color: "#444442", light: "#f0efed" },
 };
 
 function node(id, label, category, desc, nextReviewOffset) {

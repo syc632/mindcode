@@ -3,9 +3,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedData } from "../src/shared/seedData.js";
-import { extractWithAnthropic } from "../src/shared/anthropicExtractor.js";
+import { defaultDeepSeekModel, extractWithDeepSeek, summarizeObsidianNotesWithDeepSeek } from "../src/shared/deepseekExtractor.js";
 import { extractWithMock } from "../src/shared/mockExtractor.js";
 import { normalizeMindCodeData } from "../src/shared/schema.js";
+import { normalizeAiConfig, publicAiConfigStatus } from "../src/shared/aiConfig.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -15,6 +16,61 @@ let lastAutoBackupAt = 0;
 
 const backupLimit = 12;
 const autoBackupInterval = 5 * 60 * 1000;
+const obsidianNoteLimit = 240;
+const obsidianNoteCharLimit = 30_000;
+const ignoredObsidianFolders = new Set([".obsidian", ".trash", ".git", "node_modules"]);
+
+function aiConfigPath() {
+  return path.join(app.getPath("userData"), "ai-config.json");
+}
+
+async function readStoredAiConfig() {
+  try {
+    const raw = await fs.readFile(aiConfigPath(), "utf8");
+    return normalizeAiConfig(JSON.parse(raw));
+  } catch {
+    return normalizeAiConfig();
+  }
+}
+
+async function readAiConfig() {
+  const stored = await readStoredAiConfig();
+  return normalizeAiConfig({
+    ...stored,
+    apiKey: stored.apiKey || process.env.DEEPSEEK_API_KEY || "",
+  });
+}
+
+async function saveAiApiKey(payload) {
+  const config = normalizeAiConfig({
+    apiKey: payload?.apiKey,
+    model: defaultDeepSeekModel,
+  });
+
+  await fs.mkdir(path.dirname(aiConfigPath()), { recursive: true });
+  await fs.writeFile(aiConfigPath(), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return publicAiConfigStatus(config);
+}
+
+async function clearAiApiKey() {
+  await fs.rm(aiConfigPath(), { force: true });
+  return publicAiConfigStatus(await readAiConfig());
+}
+
+async function getAiConfigStatus() {
+  return publicAiConfigStatus(await readAiConfig());
+}
+
+async function showMissingAiKeyDialog() {
+  await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    title: "需要 DeepSeek API Key",
+    message: "Obsidian 导入需要 DeepSeek API key",
+    detail: "请先在 MindCode 中保存 DeepSeek API key，然后重新点击 Obsidian。",
+    buttons: ["知道了"],
+  });
+  return { ok: true };
+}
 
 function dataPath() {
   return path.join(app.getPath("userData"), "mindcode-data.json");
@@ -124,6 +180,91 @@ async function importData() {
   return { ok: true, filePath, data };
 }
 
+function skipObsidianFolder(name) {
+  return ignoredObsidianFolders.has(name) || name.startsWith(".");
+}
+
+async function readObsidianNotes(vaultPath) {
+  const pendingFolders = [vaultPath];
+  const notes = [];
+  let skippedMarkdownFiles = 0;
+
+  while (pendingFolders.length) {
+    const folderPath = pendingFolders.shift();
+    const entries = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      const entryPath = path.join(folderPath, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!skipObsidianFolder(entry.name)) pendingFolders.push(entryPath);
+        continue;
+      }
+
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".md") continue;
+      if (notes.length >= obsidianNoteLimit) {
+        skippedMarkdownFiles += 1;
+        continue;
+      }
+
+      const raw = await fs.readFile(entryPath, "utf8").catch(() => "");
+      const content = raw.trim();
+      if (!content) continue;
+      const stats = await fs.stat(entryPath);
+
+      notes.push({
+        name: path.basename(entry.name, ".md"),
+        path: path.relative(vaultPath, entryPath),
+        content: content.slice(0, obsidianNoteCharLimit),
+        truncated: content.length > obsidianNoteCharLimit,
+        updatedAt: stats.mtimeMs,
+      });
+    }
+  }
+
+  notes.sort((left, right) => right.updatedAt - left.updatedAt || left.path.localeCompare(right.path, "zh-Hans-CN"));
+  return { notes, skippedMarkdownFiles };
+}
+
+async function readObsidianVault() {
+  const aiConfig = await readAiConfig();
+  if (!aiConfig.apiKey) {
+    throw new Error("Obsidian 导入需要 DeepSeek API key。");
+  }
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择 Obsidian Vault",
+    properties: ["openDirectory"],
+  });
+  const vaultPath = result.filePaths?.[0];
+  if (result.canceled || !vaultPath) return { canceled: true };
+
+  const { notes, skippedMarkdownFiles } = await readObsidianNotes(vaultPath);
+  const warnings = [];
+  if (skippedMarkdownFiles) warnings.push(`已读取前 ${obsidianNoteLimit} 篇 Markdown 笔记。`);
+  if (notes.some((note) => note.truncated)) warnings.push(`超长笔记按每篇 ${obsidianNoteCharLimit} 字符载入。`);
+
+  return {
+    ok: true,
+    vaultName: path.basename(vaultPath),
+    notes,
+    warning: warnings.join(" "),
+  };
+}
+
+async function summarizeObsidianNotes(payload) {
+  const aiConfig = await readAiConfig();
+  if (!aiConfig.apiKey) {
+    throw new Error("Obsidian 导入需要 DeepSeek API key。");
+  }
+
+  return summarizeObsidianNotesWithDeepSeek({
+    notes: Array.isArray(payload?.notes) ? payload.notes : [],
+    apiKey: aiConfig.apiKey,
+    model: aiConfig.model,
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -155,18 +296,24 @@ ipcMain.handle("data:save", async (_event, data) => writeData(data));
 ipcMain.handle("data:export", async (_event, data) => exportData(data));
 ipcMain.handle("data:import", importData);
 ipcMain.handle("data:backup", async (_event, data) => createBackup(data, "manual"));
+ipcMain.handle("ai:get-config-status", getAiConfigStatus);
+ipcMain.handle("ai:save-api-key", async (_event, payload) => saveAiApiKey(payload));
+ipcMain.handle("ai:clear-api-key", clearAiApiKey);
+ipcMain.handle("ai:show-missing-key-dialog", showMissingAiKeyDialog);
+ipcMain.handle("obsidian:read-vault", readObsidianVault);
+ipcMain.handle("obsidian:summarize-notes", async (_event, payload) => summarizeObsidianNotes(payload));
 ipcMain.handle("extract:concepts", async (_event, payload) => {
   const text = payload?.text ?? "";
   const existingLabels = payload?.existingLabels ?? [];
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const aiConfig = await readAiConfig();
 
-  if (apiKey) {
+  if (aiConfig.apiKey) {
     try {
-      return await extractWithAnthropic({ text, existingLabels, apiKey });
+      return await extractWithDeepSeek({ text, existingLabels, apiKey: aiConfig.apiKey, model: aiConfig.model });
     } catch (error) {
       return {
         ...(await extractWithMock({ text, existingLabels })),
-        warning: `Anthropic 提取失败，已使用离线提取器：${error.message}`,
+        warning: `DeepSeek 提取失败，已使用离线提取器：${error.message}`,
       };
     }
   }
