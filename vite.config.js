@@ -16,5 +16,6 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.js"],
+    exclude: ["src/.claude/**", "node_modules/**", "dist/**"],
   },
 });

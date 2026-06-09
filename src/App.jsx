@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useInView, useMotionValue, useSpring, useTransform } from "motion/react";
 import CircularGallery from "./CircularGallery.jsx";
+import { MindLogo } from "./components/MindLogo.jsx";
 import {
   Check,
+  ChevronDown,
   CirclePlus,
+  Download,
   Edit3,
-  Filter,
+  FolderOpen,
   GitBranch,
   KeyRound,
   LibraryBig,
   Loader2,
-  Link2,
   Plus,
   RotateCcw,
   Save,
@@ -19,46 +21,31 @@ import {
   Trash2,
   Upload,
   X,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import { categories, seedData } from "./shared/seedData.js";
 import { extractWithMock } from "./shared/mockExtractor.js";
 import { daysUntil, isDue, sm2 } from "./shared/sm2.js";
 import { normalizeCard, normalizeEdge, normalizeMindCodeData, normalizeNode } from "./shared/schema.js";
-import { formatObsidianNotes, formatObsidianSummaries, sourceTextForExtraction } from "./shared/obsidian.js";
+import { mapTitleFromData } from "./shared/mindMapMarkdown.js";
+import { isReviewAnswerMatch } from "./shared/reviewAnswer.js";
 
 const storageKey = "mindcode-browser-data";
-const views = [
-  { id: "graph", label: "图谱", icon: GitBranch },
-  { id: "library", label: "知识库", icon: LibraryBig },
-  { id: "review", label: "复习", icon: RotateCcw },
-];
-const graphViewport = { x: 0, y: 0, width: 1600, height: 1100 };
+const currentMapStorageKey = "mindcode-current-map-id";
+const browserMapStorageKey = "mindcode-browser-map";
+const graphViewport = { x: 0, y: 0, width: 2200, height: 1500 };
 const graphCenter = { x: graphViewport.width / 2, y: graphViewport.height / 2 };
-const curveSpring = 0.14;
-const curveDamping = 0.68;
-const reviewCarouselColors = [
-  "30, 30, 28",
-  "55, 54, 51",
-  "80, 78, 74",
-  "105, 103, 98",
-  "45, 44, 42",
-  "65, 63, 60",
-  "35, 34, 32",
-  "90, 88, 84",
-  "50, 49, 46",
-  "70, 68, 64",
-];
-
+const graphNodePadding = 14;
+const curveSpring = 0.26;
+const curveDamping = 0.82;
+const categoryOptions = Object.entries(categories).map(([value, item]) => ({ value, label: item.label }));
 function naturalCurveTarget(from, to) {
   const deltaX = to.x - from.x;
   const deltaY = to.y - from.y;
   return {
-    c1x: from.x + deltaX * 0.35,
-    c1y: from.y + deltaY * 0.35,
-    c2x: to.x - deltaX * 0.35,
-    c2y: to.y - deltaY * 0.35,
+    c1x: from.x + deltaX * 0.16,
+    c1y: from.y + deltaY * 0.16,
+    c2x: to.x - deltaX * 0.16,
+    c2y: to.y - deltaY * 0.16,
   };
 }
 
@@ -72,22 +59,50 @@ function springForCurve(target) {
   };
 }
 
-function edgePoints(from, to) {
+function graphLevelForNode(node) {
+  return Math.max(0, Number(node?.graphLevel ?? 1));
+}
+
+function nodeHeightForLevel(level = 1) {
+  if (level <= 0) return 54;
+  if (level === 1) return 44;
+  if (level === 2) return 38;
+  return 34;
+}
+
+function nodeWidthForLabel(label, level = 1) {
+  const textLength = String(label || "").length;
+  if (level <= 0) return Math.min(280, Math.max(174, textLength * 10.5 + 54));
+  if (level === 1) return Math.min(230, Math.max(128, textLength * 9.4 + 44));
+  if (level === 2) return Math.min(190, Math.max(104, textLength * 8.4 + 34));
+  return Math.min(170, Math.max(92, textLength * 7.8 + 28));
+}
+
+function pointOnNodeEdge(center, target, width, height, gap = 4) {
+  const deltaX = target.x - center.x;
+  const deltaY = target.y - center.y;
+  const distance = Math.max(Math.hypot(deltaX, deltaY), 1);
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const scale = 1 / Math.max(Math.abs(deltaX) / halfWidth, Math.abs(deltaY) / halfHeight, 1);
+
+  return {
+    x: center.x + deltaX * scale + (deltaX / distance) * gap,
+    y: center.y + deltaY * scale + (deltaY / distance) * gap,
+  };
+}
+
+function edgePoints(from, to, fromNode, toNode) {
   const deltaX = to.x - from.x;
   const deltaY = to.y - from.y;
   const distance = Math.max(Math.hypot(deltaX, deltaY), 1);
-  const inset = Math.min(56, distance / 4);
+  const fromLevel = graphLevelForNode(fromNode);
+  const toLevel = graphLevelForNode(toNode);
 
   return {
     distance,
-    start: {
-      x: from.x + (deltaX / distance) * inset,
-      y: from.y + (deltaY / distance) * inset,
-    },
-    end: {
-      x: to.x - (deltaX / distance) * inset,
-      y: to.y - (deltaY / distance) * inset,
-    },
+    start: pointOnNodeEdge(from, to, nodeWidthForLabel(fromNode?.label, fromLevel), nodeHeightForLevel(fromLevel), fromLevel <= 0 ? 7 : 5),
+    end: pointOnNodeEdge(to, from, nodeWidthForLabel(toNode?.label, toLevel), nodeHeightForLevel(toLevel), toLevel <= 0 ? 7 : 5),
   };
 }
 
@@ -97,6 +112,268 @@ function cardsForNode(node) {
 
 function nodeIsDue(node) {
   return cardsForNode(node).some((card) => isDue(card));
+}
+
+function parentIdForNode(node, nodeIds) {
+  const parentId = node?.graphParentId || node?.parentId || "";
+  return parentId && nodeIds.has(parentId) && parentId !== node.id ? parentId : "";
+}
+
+function hierarchyEdgesForNodes(nodes) {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return nodes
+    .map((node) => {
+      const parentId = parentIdForNode(node, nodeIds);
+      return parentId
+        ? {
+            id: `parent-${parentId}-${node.id}`,
+            from: parentId,
+            to: node.id,
+            label: "包含",
+            level: graphLevelForNode(node),
+          }
+        : null;
+    })
+    .filter(Boolean);
+}
+
+function hierarchyForNodes(nodes) {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const children = new Map(nodes.map((node) => [node.id, []]));
+  const roots = [];
+
+  nodes.forEach((node) => {
+    const parentId = parentIdForNode(node, nodeIds);
+    if (parentId && children.has(parentId)) children.get(parentId).push(node);
+    else roots.push(node);
+  });
+
+  const sortedRoots = roots.length ? roots : nodes.slice(0, 1);
+  const levels = new Map();
+  const visited = new Set();
+
+  function visit(node, level, trail = new Set()) {
+    if (!node || trail.has(node.id)) return;
+    visited.add(node.id);
+    levels.set(node.id, level);
+    const nextTrail = new Set(trail).add(node.id);
+    (children.get(node.id) || []).forEach((child) => visit(child, level + 1, nextTrail));
+  }
+
+  sortedRoots.forEach((root) => visit(root, 0));
+  nodes.forEach((node) => {
+    if (!visited.has(node.id)) {
+      roots.push(node);
+      visit(node, 0);
+    }
+  });
+
+  return { nodeIds, nodeById, children, roots: sortedRoots, levels };
+}
+
+function mindMapVisibleNodes(nodes, expandedIds) {
+  const hierarchy = hierarchyForNodes(nodes);
+  const visible = [];
+  const useVirtualRoot = hierarchy.roots.length > 1;
+  const virtualRoot = useVirtualRoot
+    ? {
+        id: "mindcode-map-root",
+        label: "MindCode",
+        category: "core",
+        desc: "知识图谱中心",
+        cards: [],
+        sources: [],
+        graphVirtual: true,
+      }
+    : null;
+
+  function visit(node, level, trail = new Set(), graphParentId = "") {
+    if (!node || trail.has(node.id)) return;
+    const children = hierarchy.children.get(node.id) || [];
+    const isExpanded = level === 0 || expandedIds.has(node.id);
+    visible.push({
+      ...node,
+      graphParentId,
+      graphLevel: level,
+      graphHasChildren: children.length > 0,
+      graphExpanded: isExpanded,
+      graphChildCount: children.length,
+    });
+
+    if (!isExpanded) return;
+    const nextTrail = new Set(trail).add(node.id);
+    children.forEach((child) => visit(child, level + 1, nextTrail, node.id));
+  }
+
+  if (virtualRoot) {
+    visible.push({
+      ...virtualRoot,
+      graphLevel: 0,
+      graphHasChildren: true,
+      graphExpanded: true,
+      graphChildCount: hierarchy.roots.length,
+    });
+    hierarchy.roots.forEach((root) => visit(root, 1, new Set([virtualRoot.id]), virtualRoot.id));
+  } else {
+    hierarchy.roots.forEach((root) => visit(root, 0));
+  }
+
+  return visible;
+}
+
+function descendantIdsForNode(nodes, nodeId) {
+  const { children } = hierarchyForNodes(nodes);
+  const descendants = new Set();
+  const queue = [...(children.get(nodeId) || [])];
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const node = queue[index];
+    if (descendants.has(node.id)) continue;
+    descendants.add(node.id);
+    queue.push(...(children.get(node.id) || []));
+  }
+
+  return descendants;
+}
+
+function arrangeRowsByHierarchy(rows) {
+  const rowById = new Map(rows.map((row) => [row.node.id, row]));
+  const children = new Map();
+  const roots = [];
+
+  rows.forEach((row) => children.set(row.node.id, []));
+  rows.forEach((row) => {
+    const parentId = row.node.parentId || "";
+    if (parentId && rowById.has(parentId)) children.get(parentId).push(row);
+    else roots.push(row);
+  });
+
+  const arranged = [];
+  const visit = (row, depth, trail = new Set()) => {
+    if (trail.has(row.node.id)) return;
+    arranged.push({ ...row, hierarchyDepth: Math.min(depth, 2) });
+    const nextTrail = new Set(trail).add(row.node.id);
+    (children.get(row.node.id) || []).forEach((child) => visit(child, depth + 1, nextTrail));
+  };
+
+  roots.forEach((row) => visit(row, 0));
+  return arranged;
+}
+
+function clampGraphPosition(point, margin = 84) {
+  return {
+    x: Math.max(margin, Math.min(graphViewport.width - margin, point.x)),
+    y: Math.max(margin, Math.min(graphViewport.height - margin, point.y)),
+  };
+}
+
+function distributeAround(items, origin, radius, startAngle = -Math.PI / 2, arc = Math.PI * 2) {
+  if (!items.length) return {};
+  const positions = {};
+  const step = items.length === 1 ? 0 : arc / items.length;
+  items.forEach((item, index) => {
+    const angle = startAngle + step * index;
+    positions[item.id] = clampGraphPosition({
+      x: origin.x + Math.cos(angle) * radius,
+      y: origin.y + Math.sin(angle) * radius,
+    });
+  });
+  return positions;
+}
+
+function resolveMindMapCollisions(positions, nodes) {
+  const positionById = { ...positions };
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+  for (let pass = 0; pass < 64; pass += 1) {
+    for (let a = 0; a < nodes.length; a += 1) {
+      for (let b = a + 1; b < nodes.length; b += 1) {
+        const first = nodes[a];
+        const second = nodes[b];
+        const firstPoint = positionById[first.id];
+        const secondPoint = positionById[second.id];
+        if (!firstPoint || !secondPoint) continue;
+
+        const firstLevel = graphLevelForNode(first);
+        const secondLevel = graphLevelForNode(second);
+        const minDistance =
+          (nodeWidthForLabel(first.label, firstLevel) + nodeWidthForLabel(second.label, secondLevel)) / 2 +
+          (firstLevel === 0 || secondLevel === 0 ? 48 : 34);
+        const deltaX = secondPoint.x - firstPoint.x;
+        const deltaY = secondPoint.y - firstPoint.y;
+        const distance = Math.hypot(deltaX, deltaY) || 1;
+        if (distance >= minDistance) continue;
+
+        const push = (minDistance - distance) / 2;
+        const pushX = (deltaX / distance) * push;
+        const pushY = (deltaY / distance) * push;
+        const firstPinned = graphLevelForNode(nodeById.get(first.id)) === 0;
+        const secondPinned = graphLevelForNode(nodeById.get(second.id)) === 0;
+
+        if (!firstPinned) {
+          positionById[first.id] = clampGraphPosition({ x: firstPoint.x - pushX, y: firstPoint.y - pushY });
+        }
+        if (!secondPinned) {
+          positionById[second.id] = clampGraphPosition({ x: secondPoint.x + pushX, y: secondPoint.y + pushY });
+        }
+      }
+    }
+  }
+
+  return positionById;
+}
+
+function mindMapHierarchyPositions(nodes) {
+  const { children, roots } = hierarchyForNodes(nodes);
+  const positions = {};
+
+  if (roots.length === 1) {
+    positions[roots[0].id] = { ...graphCenter };
+  } else {
+    Object.assign(positions, distributeAround(roots, graphCenter, Math.min(220, 132 + roots.length * 14), -Math.PI / 2, Math.PI * 2));
+  }
+
+  function layoutChildren(parent, parentAngle, level) {
+    const childNodes = children.get(parent.id) || [];
+    if (!childNodes.length || !positions[parent.id]) return;
+
+    if (level === 1) {
+      const radius = 250 + Math.max(0, childNodes.length - 8) * 12;
+      Object.assign(positions, distributeAround(childNodes, positions[parent.id], radius, -Math.PI / 2, Math.PI * 2));
+      childNodes.forEach((child) => {
+        const childPoint = positions[child.id];
+        const angle = Math.atan2(childPoint.y - positions[parent.id].y, childPoint.x - positions[parent.id].x);
+        layoutChildren(child, angle, level + 1);
+      });
+      return;
+    }
+
+    const radius = (level === 2 ? 250 : 196) + Math.max(0, childNodes.length - 4) * (level === 2 ? 18 : 18);
+    const spread = Math.min(Math.PI * 0.92, Math.max(0.52, childNodes.length * 0.36));
+    const step = childNodes.length === 1 ? 0 : spread / (childNodes.length - 1);
+    const startAngle = parentAngle - spread / 2;
+
+    childNodes.forEach((child, index) => {
+      const angle = childNodes.length === 1 ? parentAngle : startAngle + step * index;
+      const parentPoint = positions[parent.id];
+      positions[child.id] = clampGraphPosition({
+        x: parentPoint.x + Math.cos(angle) * (radius + (level > 2 ? (index % 2) * 18 : 0)),
+        y: parentPoint.y + Math.sin(angle) * (radius + (level > 2 ? (index % 2) * 18 : 0)),
+      });
+      layoutChildren(child, angle, level + 1);
+    });
+  }
+
+  roots.forEach((root) => layoutChildren(root, 0, 1));
+
+  nodes.forEach((node, index) => {
+    if (positions[node.id]) return;
+    const fallback = distributeAround([node], graphCenter, 380 + (index % 3) * 56, -Math.PI / 2 + index * 0.7);
+    positions[node.id] = fallback[node.id];
+  });
+
+  return resolveMindMapCollisions(positions, nodes);
 }
 
 function todayCount(nodes) {
@@ -114,8 +391,15 @@ function reviewQueue(nodes) {
         label: node.label,
         category: node.category,
         desc: node.desc,
+        sourceSummary: node.sources.slice(-2).map((source) => source.text).join("\n\n"),
+        cardCount: cardsForNode(node).length,
+        dueCount: cardsForNode(node).filter((item) => isDue(item)).length,
       })),
   );
+}
+
+function reviewCardKey(card) {
+  return card ? `${card.nodeId}:${card.id}` : "";
 }
 
 function nodeSearchText(node) {
@@ -150,50 +434,120 @@ function writeLocalCache(data) {
   }
 }
 
-async function loadData() {
-  const cached = readLocalCache();
-
-  if (window.mindcode?.loadData) {
-    const result = await window.mindcode.loadData();
-    if (result.source === "seed" && cached) {
-      return { data: cached, source: "localStorage", warning: result.warning };
+function readBrowserMap() {
+  try {
+    const raw = localStorage.getItem(browserMapStorageKey);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const data = normalizeMindCodeData(parsed.data);
+      return {
+        map: {
+          id: parsed.map?.id || "browser-preview.mindcode.md",
+          title: parsed.map?.title || mapTitleFromData(data),
+        },
+        data,
+      };
     }
-    return result;
+  } catch {
+    // Fall through to the legacy browser cache.
   }
 
-  if (!cached) return { data: normalizeMindCodeData(seedData()), source: "seed" };
-  return { data: cached, source: "localStorage" };
+  const data = readLocalCache() || normalizeMindCodeData(seedData());
+  return {
+    map: { id: "browser-preview.mindcode.md", title: mapTitleFromData(data) },
+    data,
+  };
 }
 
-async function saveData(data) {
+function writeBrowserMap(map, data) {
   const normalized = normalizeMindCodeData(data);
   writeLocalCache(normalized);
-
-  if (window.mindcode?.saveData) {
-    return window.mindcode.saveData(normalized);
+  try {
+    localStorage.setItem(browserMapStorageKey, JSON.stringify({ map, data: normalized }));
+    localStorage.setItem(currentMapStorageKey, map?.id || "");
+  } catch {
+    // Browser preview can continue without persistent localStorage.
   }
-
-  return { ok: true };
 }
 
-function downloadJsonExport(data) {
+async function loadInitialMindMap() {
+  if (window.mindcode?.listMaps && window.mindcode?.loadMap) {
+    const listed = await window.mindcode.listMaps();
+    const maps = listed.maps || [];
+    const preferredId = localStorage.getItem(currentMapStorageKey);
+    const target = maps.find((map) => map.id === preferredId) || maps[0];
+    const loaded = await window.mindcode.loadMap({ id: target?.id });
+    const map = loaded.map || target || { id: "MindCode.mindcode.md", title: mapTitleFromData(loaded.data) };
+    localStorage.setItem(currentMapStorageKey, map.id);
+    return { maps, map, data: loaded.data, warning: loaded.warning };
+  }
+
+  const browserMap = readBrowserMap();
+  return { maps: [browserMap.map], map: browserMap.map, data: browserMap.data, source: "localStorage" };
+}
+
+async function saveCurrentMindMap(map, data) {
   const normalized = normalizeMindCodeData(data);
-  const blob = new Blob([`${JSON.stringify(normalized, null, 2)}\n`], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `MindCode-export-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return { ok: true };
-}
+  const title = mapTitleFromData(normalized, map?.title || "MindCode Map");
+  writeBrowserMap({ ...map, title }, normalized);
 
-async function extractConcepts(text, existingLabels) {
-  if (window.mindcode?.extractConcepts) {
-    return window.mindcode.extractConcepts({ text, existingLabels });
+  if (window.mindcode?.saveMap) {
+    return window.mindcode.saveMap({ id: map?.id, title, data: normalized });
   }
 
+  return { ok: true, map: { ...map, title }, data: normalized };
+}
+
+async function createMindMapFile(title, data) {
+  const normalized = normalizeMindCodeData(data);
+  if (window.mindcode?.createMap) {
+    return window.mindcode.createMap({ title, data: normalized });
+  }
+
+  const map = { id: `${Date.now()}-${title || "MindCode"}.mindcode.md`, title: title || mapTitleFromData(normalized) };
+  writeBrowserMap(map, normalized);
+  return { ok: true, map, data: normalized };
+}
+
+async function exportMindMapFile(map, data) {
+  const normalized = normalizeMindCodeData(data);
+  const title = mapTitleFromData(normalized, map?.title || "MindCode Map");
+  if (window.mindcode?.exportMap) {
+    return window.mindcode.exportMap({ id: map?.id, title, data: normalized });
+  }
+
+  writeBrowserMap({ ...map, title }, normalized);
+  return { ok: true, browserOnly: true };
+}
+
+async function importMindMapFile() {
+  if (window.mindcode?.importMap) return window.mindcode.importMap();
+  return { canceled: true, browserOnly: true };
+}
+
+async function openMindMapFile() {
+  if (window.mindcode?.openMapFile) return window.mindcode.openMapFile();
+  return { canceled: true, browserOnly: true };
+}
+
+async function extractConcepts(text, existingLabels, options = {}) {
+  if (window.mindcode?.extractConcepts) {
+    return window.mindcode.extractConcepts({ text, existingLabels, ...options });
+  }
+
+  if (options.requireAi) throw new Error("DashScope API key required for local document scan.");
   return extractWithMock({ text, existingLabels });
+}
+
+function formatScannedDocuments(documents = []) {
+  return documents
+    .map((document) => [`# ${document.relativePath || document.name || document.path}`, document.text || ""].join("\n"))
+    .join("\n\n---\n\n")
+    .trim();
+}
+
+function displayNameForDocument(document) {
+  return document?.name || document?.relativePath?.split("/").pop() || document?.path || "未命名文档";
 }
 
 function categoryFor(node) {
@@ -218,6 +572,173 @@ function Toast({ toast, onClear }) {
   );
 }
 
+function FilterDropdown({ label, value, options, onChange, onDeleteOption, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const [hoveredOptionIndex, setHoveredOptionIndex] = useState(null);
+  const [contextOption, setContextOption] = useState(null);
+  const ref = useRef(null);
+  const hoverCloseTimerRef = useRef(null);
+  const selectedOption = options.find((option) => option.value === value) || options[0];
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === selectedOption?.value));
+  const activeOptionIndex = hoveredOptionIndex ?? selectedIndex;
+  const activeOptionOffset = `${activeOptionIndex * 54}px`;
+
+  const clearHoverCloseTimer = useCallback(() => {
+    if (!hoverCloseTimerRef.current) return;
+    window.clearTimeout(hoverCloseTimerRef.current);
+    hoverCloseTimerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const closeOnOutside = (event) => {
+      if (!ref.current?.contains(event.target)) {
+        setOpen(false);
+        setHoveredOptionIndex(null);
+        setContextOption(null);
+      }
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        setHoveredOptionIndex(null);
+        setContextOption(null);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => () => clearHoverCloseTimer(), [clearHoverCloseTimer]);
+
+  function openOnHover() {
+    if (disabled) return;
+    clearHoverCloseTimer();
+    setOpen(true);
+  }
+
+  function closeAfterHover() {
+    if (contextOption) return;
+    clearHoverCloseTimer();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+      setHoveredOptionIndex(null);
+      setContextOption(null);
+      hoverCloseTimerRef.current = null;
+    }, 160);
+  }
+
+  function choose(nextValue) {
+    clearHoverCloseTimer();
+    onChange(nextValue);
+    setOpen(false);
+    setHoveredOptionIndex(null);
+    setContextOption(null);
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={`filter-dropdown ${open ? "is-open" : ""}`}
+      onMouseEnter={openOnHover}
+      onMouseLeave={closeAfterHover}
+    >
+      <button
+        type="button"
+        className="filter-trigger"
+        onClick={() => {
+          clearHoverCloseTimer();
+          setOpen((current) => !current);
+          setHoveredOptionIndex(null);
+          setContextOption(null);
+        }}
+        disabled={disabled}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <span>
+          {label ? <em>{label}：</em> : null}
+          {selectedOption?.label || ""}
+        </span>
+        <ChevronDown size={15} />
+      </button>
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            className={`filter-menu ${hoveredOptionIndex !== null ? "is-hovering" : ""}`}
+            role="radiogroup"
+            aria-label={label ? `${label}选项` : "筛选选项"}
+            style={{
+              "--active-option-offset": activeOptionOffset,
+              "--filter-option-count": options.length,
+            }}
+            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+            transition={{ duration: 0.12 }}
+            onMouseLeave={() => setHoveredOptionIndex(null)}
+          >
+            {options.map((option, index) => (
+              <button
+                key={option.value}
+                type="button"
+                className={[
+                  "filter-option",
+                  option.value === value ? "is-selected" : "",
+                  index === activeOptionIndex ? "is-indicator-active" : "",
+                ].filter(Boolean).join(" ")}
+                onClick={() => choose(option.value)}
+                onMouseEnter={() => setHoveredOptionIndex(index)}
+                onFocus={() => setHoveredOptionIndex(index)}
+                onContextMenu={
+                  onDeleteOption
+                    ? (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setContextOption({ ...option, x: event.clientX, y: event.clientY });
+                      }
+                    : undefined
+                }
+                role="radio"
+                aria-checked={option.value === value}
+              >
+                <span>{option.label}</span>
+                {option.value === value ? <Check size={14} /> : null}
+              </button>
+            ))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      {contextOption ? (
+        <div
+          className="option-context-menu"
+          role="menu"
+          style={{ "--context-menu-x": `${contextOption.x}px`, "--context-menu-y": `${contextOption.y}px` }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onDeleteOption(contextOption.value);
+              setContextOption(null);
+              setOpen(false);
+            }}
+          >
+            <Trash2 size={14} />
+            删除图谱
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ApiKeyModal({
   open,
   status,
@@ -233,11 +754,11 @@ function ApiKeyModal({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="DeepSeek API Key 设置">
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="DashScope API Key 设置">
         <div className="modal-header">
           <div>
-            <h3>DeepSeek API Key</h3>
-            <p>{status?.hasApiKey ? "已保存本机 API key。" : "Obsidian 导入和 AI 提取需要 DeepSeek API key。"}</p>
+            <h3>DashScope API Key</h3>
+            <p>{status?.hasApiKey ? "已保存本机 API key。" : "本地文档 AI 扫描和概念提取需要 DashScope API key。"}</p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -269,115 +790,58 @@ function ApiKeyModal({
   );
 }
 
-function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
+function AppBrandHeader({ view, currentMap, data }) {
+  const viewLabels = {
+    graph: currentMap?.title ? `图谱：${currentMap.title}` : "图谱",
+    library: "知识库",
+    review: "复习",
+    add: "新增概念",
+  };
+  const dueCount = todayCount(data.nodes);
+
+  return (
+    <header className="app-header" aria-label="MindCode">
+      <div className="brand">
+        <div className="brand-mark" aria-hidden="true">
+          <MindLogo size={64} surface="var(--surface)" />
+        </div>
+        <div className="brand-copy">
+          <h1>MindCode</h1>
+          <p>{viewLabels[view] || "知识图谱"}</p>
+        </div>
+      </div>
+      <div className="header-controls app-header-stats" aria-label="图谱统计">
+        <span>{data.nodes.length} 节点</span>
+        <span>{dueCount} 待复习</span>
+      </div>
+    </header>
+  );
+}
+
+function GraphCanvas({ nodes, edges, selectedId, onSelect, onToggleNode, onOpenDetail }) {
   const svgRef = useRef(null);
-  const dragOffset = useRef({ x: 0, y: 0 });
-  const panStart = useRef(null);
   const positionsRef = useRef({});
   const edgesRef = useRef(edges);
   const curveSpringsRef = useRef({});
   const curveAnimationRef = useRef(null);
-  const draggingRef = useRef(null);
-  const neighborVelocityRef = useRef({});
-  const lastDragPosRef = useRef(null);
-  const [positions, setPositions] = useState({});
-  const [dragging, setDragging] = useState(null);
-  const [panning, setPanning] = useState(false);
+  const nodeClickTimerRef = useRef(null);
+  const pointerStartRef = useRef(null);
+  const panRef = useRef(null);
+  const [positions, setPositions] = useState(() => mindMapHierarchyPositions(nodes));
   const [viewport, setViewport] = useState(graphViewport);
   const [, setCurveRevision] = useState(0);
   const [tooltip, setTooltip] = useState(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [hoveredNodeId, setHoveredNodeId] = useState(null);
+  const [edgeAnimationKey, setEdgeAnimationKey] = useState(0);
 
   useEffect(() => {
-    const width = 1600;
-    const height = 1100;
-    setPositions((previous) => {
-      const next = {};
-      nodes.forEach((node) => {
-        if (previous[node.id]) {
-          next[node.id] = previous[node.id];
-          return;
-        }
-        const padding = 120;
-        next[node.id] = {
-          x: padding + Math.random() * (width - padding * 2),
-          y: padding + Math.random() * (height - padding * 2),
-        };
-      });
+    setPositions(mindMapHierarchyPositions(nodes));
+  }, [nodes]);
 
-      const repulsion = 18000;
-      const attraction = 0.012;
-      const centerGravity = 0.002;
-      const targetLength = 260;
-      const centerX = width / 2;
-      const centerY = height / 2;
-      const iterations = 120;
-      const nodeList = nodes.map((node) => ({ id: node.id, ...next[node.id] }));
-
-      for (let iteration = 0; iteration < iterations; iteration += 1) {
-        const forces = Object.fromEntries(nodeList.map((node) => [node.id, { fx: 0, fy: 0 }]));
-
-        for (let i = 0; i < nodeList.length; i += 1) {
-          for (let j = i + 1; j < nodeList.length; j += 1) {
-            const first = nodeList[i];
-            const second = nodeList[j];
-            const deltaX = second.x - first.x || 0.1;
-            const deltaY = second.y - first.y || 0.1;
-            const distanceSquared = Math.max(deltaX * deltaX + deltaY * deltaY, 1);
-            const distance = Math.sqrt(distanceSquared);
-            const force = repulsion / distanceSquared;
-            const forceX = (deltaX / distance) * force;
-            const forceY = (deltaY / distance) * force;
-
-            forces[first.id].fx -= forceX;
-            forces[first.id].fy -= forceY;
-            forces[second.id].fx += forceX;
-            forces[second.id].fy += forceY;
-          }
-        }
-
-        edges.forEach((edge) => {
-          const first = nodeList.find((node) => node.id === edge.from);
-          const second = nodeList.find((node) => node.id === edge.to);
-          if (!first || !second) return;
-
-          const deltaX = second.x - first.x;
-          const deltaY = second.y - first.y;
-          const distance = Math.max(Math.hypot(deltaX, deltaY), 1);
-          const stretch = distance - targetLength;
-          const forceX = (deltaX / distance) * stretch * attraction * distance;
-          const forceY = (deltaY / distance) * stretch * attraction * distance;
-
-          forces[first.id].fx += forceX;
-          forces[first.id].fy += forceY;
-          forces[second.id].fx -= forceX;
-          forces[second.id].fy -= forceY;
-        });
-
-        nodeList.forEach((node) => {
-          forces[node.id].fx += (centerX - node.x) * centerGravity;
-          forces[node.id].fy += (centerY - node.y) * centerGravity;
-        });
-
-        const cooling = 1 - iteration / iterations;
-        const maxStep = 60 * cooling + 2;
-        nodeList.forEach((node) => {
-          const force = forces[node.id];
-          const magnitude = Math.hypot(force.fx, force.fy) || 1;
-          const step = Math.min(magnitude, maxStep);
-          node.x += (force.fx / magnitude) * step;
-          node.y += (force.fy / magnitude) * step;
-          node.x = Math.max(80, Math.min(width - 80, node.x));
-          node.y = Math.max(80, Math.min(height - 80, node.y));
-        });
-      }
-
-      nodeList.forEach((node) => {
-        next[node.id] = { x: node.x, y: node.y };
-      });
-
-      return next;
-    });
-  }, [edges, nodes]);
+  useEffect(() => {
+    setEdgeAnimationKey((current) => (current + 1) % 1000);
+  }, [nodes, edges]);
 
   const pointFor = useCallback((nodeId) => positionsRef.current[nodeId] || graphCenter, []);
 
@@ -413,7 +877,7 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
 
       setCurveRevision((revision) => revision + 1);
 
-      if (moving || draggingRef.current) {
+      if (moving) {
         curveAnimationRef.current = window.requestAnimationFrame(step);
         return;
       }
@@ -434,14 +898,10 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
     startCurveAnimation();
   }, [edges, startCurveAnimation]);
 
-  useEffect(() => {
-    draggingRef.current = dragging;
-    if (dragging) startCurveAnimation();
-  }, [dragging, startCurveAnimation]);
-
   useEffect(
     () => () => {
       if (curveAnimationRef.current) window.cancelAnimationFrame(curveAnimationRef.current);
+      if (nodeClickTimerRef.current) window.clearTimeout(nodeClickTimerRef.current);
     },
     [],
   );
@@ -454,109 +914,57 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
     return point.matrixTransform(svg.getScreenCTM().inverse());
   }, []);
 
-  const handlePointerDown = (event, nodeId) => {
+  const handlePointerDown = (event) => {
     setTooltip(null);
-    const point = getPoint(event);
-    const current = positions[nodeId] || { x: 800, y: 550 };
-    dragOffset.current = { x: point.x - current.x, y: point.y - current.y };
-    neighborVelocityRef.current = {};
-    lastDragPosRef.current = null;
-    setDragging(nodeId);
-    onSelect(nodeId);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    pointerStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
     event.stopPropagation();
   };
 
   const handleCanvasPointerDown = (event) => {
     if (event.button !== 0 || event.target.closest?.(".graph-node")) return;
+    event.preventDefault();
     setTooltip(null);
-    panStart.current = { x: event.clientX, y: event.clientY, viewport };
-    setPanning(true);
     onSelect(null);
+    panRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      viewport,
+    };
+    setIsPanning(true);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
-  const handlePointerMove = useCallback(
-    (event) => {
-      if (dragging) {
-        const point = getPoint(event);
-        const newX = Math.max(64, Math.min(1536, point.x - dragOffset.current.x));
-        const newY = Math.max(48, Math.min(1052, point.y - dragOffset.current.y));
-
-        setPositions((previous) => {
-          const next = { ...previous, [dragging]: { x: newX, y: newY } };
-          const last = lastDragPosRef.current || { x: newX, y: newY };
-          const dragDeltaX = newX - last.x;
-          const dragDeltaY = newY - last.y;
-          lastDragPosRef.current = { x: newX, y: newY };
-
-          const neighborIds = new Set();
-          edgesRef.current.forEach((edge) => {
-            if (edge.from === dragging) neighborIds.add(edge.to);
-            if (edge.to === dragging) neighborIds.add(edge.from);
-          });
-
-          const springStrength = 0.18;
-          const damping = 0.72;
-          const dragTransfer = 0.28;
-          const restLength = 260;
-
-          neighborIds.forEach((neighborId) => {
-            if (!next[neighborId]) return;
-
-            const velocity = neighborVelocityRef.current[neighborId] || { vx: 0, vy: 0 };
-            const anchor = next[dragging];
-            const neighbor = next[neighborId];
-            const deltaX = anchor.x - neighbor.x;
-            const deltaY = anchor.y - neighbor.y;
-            const distance = Math.hypot(deltaX, deltaY) || 1;
-            const stretch = distance - restLength;
-
-            velocity.vx = (velocity.vx + dragDeltaX * dragTransfer) * damping;
-            velocity.vy = (velocity.vy + dragDeltaY * dragTransfer) * damping;
-
-            if (Math.abs(stretch) > 10) {
-              velocity.vx += (deltaX / distance) * stretch * springStrength * 0.06;
-              velocity.vy += (deltaY / distance) * stretch * springStrength * 0.06;
-            }
-
-            neighborVelocityRef.current[neighborId] = velocity;
-            next[neighborId] = {
-              x: Math.max(64, Math.min(1536, neighbor.x + velocity.vx)),
-              y: Math.max(48, Math.min(1052, neighbor.y + velocity.vy)),
-            };
-          });
-
-          return next;
-        });
-        return;
-      }
-
-      if (!panning || !panStart.current || !svgRef.current) return;
-      const bounds = svgRef.current.getBoundingClientRect();
-      const { viewport: startViewport } = panStart.current;
-      const deltaX = ((event.clientX - panStart.current.x) / Math.max(bounds.width, 1)) * startViewport.width;
-      const deltaY = ((event.clientY - panStart.current.y) / Math.max(bounds.height, 1)) * startViewport.height;
+  const handlePointerMove = (event) => {
+    if (panRef.current) {
+      const svg = svgRef.current;
+      const start = panRef.current;
+      const scaleX = start.viewport.width / Math.max(svg?.clientWidth || 1, 1);
+      const scaleY = start.viewport.height / Math.max(svg?.clientHeight || 1, 1);
       setViewport({
-        ...startViewport,
-        x: startViewport.x - deltaX,
-        y: startViewport.y - deltaY,
+        ...start.viewport,
+        x: start.viewport.x - (event.clientX - start.startX) * scaleX,
+        y: start.viewport.y - (event.clientY - start.startY) * scaleY,
       });
-    },
-    [dragging, getPoint, panning],
-  );
+      return;
+    }
 
-  const stopPointerGesture = () => {
-    neighborVelocityRef.current = {};
-    lastDragPosRef.current = null;
-    setDragging(null);
-    setPanning(false);
-    panStart.current = null;
+    const pointerStart = pointerStartRef.current;
+    if (pointerStart && Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4) {
+      pointerStart.moved = true;
+    }
+  };
+
+  const stopPan = (event) => {
+    if (!panRef.current) return;
+    event.currentTarget.releasePointerCapture?.(panRef.current.pointerId);
+    panRef.current = null;
+    setIsPanning(false);
   };
 
   const zoomAt = useCallback((factor, anchor) => {
     setViewport((previous) => {
-      const width = Math.max(360, Math.min(1800, previous.width * factor));
+      const width = Math.max(360, Math.min(2800, previous.width * factor));
       const scale = width / previous.width;
       const height = previous.height * scale;
       return {
@@ -568,38 +976,49 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
     });
   }, []);
 
-  const zoomFromCenter = (factor) => {
-    zoomAt(factor, {
-      x: viewport.x + viewport.width / 2,
-      y: viewport.y + viewport.height / 2,
-    });
-  };
-
   const handleWheel = (event) => {
     event.preventDefault();
     zoomAt(event.deltaY > 0 ? 1.12 : 0.89, getPoint(event));
   };
 
+  const handleNodeClick = (event, node) => {
+    if (event.detail !== 1 || pointerStartRef.current?.moved) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (nodeClickTimerRef.current) window.clearTimeout(nodeClickTimerRef.current);
+    nodeClickTimerRef.current = window.setTimeout(() => {
+      onSelect(node.id);
+      if (node.graphVirtual) return;
+      if (node.graphHasChildren && graphLevelForNode(node) >= 1) onToggleNode?.(node.id);
+    }, 170);
+  };
+
+  const handleNodeDoubleClick = (event, node) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (nodeClickTimerRef.current) window.clearTimeout(nodeClickTimerRef.current);
+    if (!node.graphVirtual) onOpenDetail?.(node.id);
+  };
+
   const nodeIds = new Set(nodes.map((node) => node.id));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
 
   return (
     <div className="graph-stage">
       <svg
         ref={svgRef}
-        className={`graph-canvas ${dragging ? "is-node-dragging" : ""} ${panning ? "is-panning" : ""}`}
+        className={`graph-canvas is-fixed ${isPanning ? "is-panning" : ""}`}
         viewBox={`${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`}
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={stopPointerGesture}
-        onPointerCancel={stopPointerGesture}
+        onPointerUp={stopPan}
+        onPointerCancel={stopPan}
+        onPointerLeave={stopPan}
         onWheel={handleWheel}
       >
         <defs>
-          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-            <path d="M2 2L8 5L2 8" className="edge-arrow" />
-          </marker>
-          <pattern id="dot-grid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
-            <circle cx="0" cy="0" r="0.9" fill="rgba(0,0,0,0.13)" />
+          <pattern id="dot-grid" x="0" y="0" width="22" height="22" patternUnits="userSpaceOnUse">
+            <circle cx="0" cy="0" r="0.7" fill="rgba(0,0,0,0.05)" />
           </pattern>
         </defs>
 
@@ -610,66 +1029,95 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
           .map((edge) => {
             const from = positions[edge.from] || graphCenter;
             const to = positions[edge.to] || graphCenter;
-            const { start, end } = edgePoints(from, to);
+            const { start, end } = edgePoints(from, to, nodesById.get(edge.from), nodesById.get(edge.to));
             const control = curveSpringsRef.current[edge.id] || naturalCurveTarget(from, to);
-            const label = {
-              x: 0.125 * (start.x + end.x) + 0.375 * (control.c1x + control.c2x),
-              y: 0.125 * (start.y + end.y) + 0.375 * (control.c1y + control.c2y),
-            };
+            const isHoveredEdge = hoveredNodeId && (edge.from === hoveredNodeId || edge.to === hoveredNodeId);
+            const isSelectedEdge = selectedId && (edge.from === selectedId || edge.to === selectedId);
+            const edgePath = `M ${start.x} ${start.y} C ${control.c1x} ${control.c1y} ${control.c2x} ${control.c2y} ${end.x} ${end.y}`;
             return (
-              <g key={edge.id} className="edge">
-                <path
-                  d={`M ${start.x} ${start.y} C ${control.c1x} ${control.c1y} ${control.c2x} ${control.c2y} ${end.x} ${end.y}`}
-                  markerEnd="url(#arrow)"
-                />
-                <text x={label.x} y={label.y - 8} textAnchor="middle">
-                  {edge.label}
-                </text>
+              <g
+                key={`${edge.id}-${edgeAnimationKey}-${isHoveredEdge ? hoveredNodeId : "idle"}`}
+                className={[
+                  "edge",
+                  `edge-level-${Math.min(Number(edge.level || 1), 3)}`,
+                  isHoveredEdge ? "is-hovered" : "",
+                  isSelectedEdge ? "is-selected-edge" : "",
+                ].filter(Boolean).join(" ")}
+              >
+                <path className="edge-path" d={edgePath} />
+                <path className="edge-draw" d={edgePath} pathLength="1" />
               </g>
             );
           })}
 
-        {nodes.map((node) => {
-          const point = positions[node.id] || { x: 800, y: 550 };
-          const category = categoryFor(node);
-          const selected = selectedId === node.id;
-          const due = nodeIsDue(node);
-          const width = Math.min(190, Math.max(108, node.label.length * 9 + 32));
-          return (
-            <g
-              key={node.id}
-              className={`graph-node ${selected ? "is-selected" : ""}`}
-              onPointerDown={(event) => handlePointerDown(event, node.id)}
-              onMouseEnter={(e) => { if (!draggingRef.current) setTooltip({ desc: node.desc, x: e.clientX, y: e.clientY }); }}
-              onMouseLeave={() => setTooltip(null)}
-              onMouseMove={(e) => { if (draggingRef.current) { setTooltip(null); return; } setTooltip(t => t ? { ...t, x: e.clientX, y: e.clientY } : null); }}
-            >
-              {selected ? (
-                <rect
-                  x={point.x - width / 2 - 5}
-                  y={point.y - 25}
-                  width={width + 10}
-                  height="50"
-                  rx="10"
-                  className="node-ring"
-                  style={{ stroke: category.color }}
-                />
-              ) : null}
-              <rect
-                x={point.x - width / 2}
-                y={point.y - 20}
-                width={width}
-                height="40"
-                rx="8"
-                style={{ fill: category.light, stroke: category.color }}
-              />
-              {due ? <circle cx={point.x + width / 2 - 5} cy={point.y - 17} r="5" className="due-dot" /> : null}
-              <text x={point.x} y={point.y + 1} textAnchor="middle" dominantBaseline="middle" style={{ fill: category.color }}>
-                {node.label}
-              </text>
-            </g>
-          );
-        })}
+        <AnimatePresence initial={false}>
+          {nodes.map((node, index) => {
+            const point = positions[node.id] || graphCenter;
+            const parentId = parentIdForNode(node, nodeIds);
+            const parentPoint = parentId ? positions[parentId] || point : point;
+            const level = graphLevelForNode(node);
+            const category = categoryFor(node);
+            const selected = selectedId === node.id;
+            const hovered = hoveredNodeId === node.id;
+            const due = !node.graphVirtual && nodeIsDue(node);
+            const width = nodeWidthForLabel(node.label, level);
+            const height = nodeHeightForLevel(level);
+            const objectWidth = width + graphNodePadding * 2;
+            const objectHeight = height + graphNodePadding * 2;
+            const transition = { type: "spring", stiffness: 260, damping: 32, mass: 0.86 };
+            return (
+              <motion.g
+                key={node.id}
+                className={[
+                  "graph-node",
+                  `graph-node-level-${Math.min(level, 3)}`,
+                  selected ? "is-selected" : "",
+                  hovered ? "is-hovered" : "",
+                  node.graphHasChildren ? "has-children" : "",
+                  node.graphExpanded ? "is-expanded" : "",
+                ].filter(Boolean).join(" ")}
+                initial={{ x: parentPoint.x, y: parentPoint.y, opacity: 0, scale: 0.8 }}
+                animate={{ x: point.x, y: point.y, opacity: level > 2 ? 0.76 : 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.82, transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] } }}
+                transition={transition}
+                onPointerDown={handlePointerDown}
+                onClick={(event) => handleNodeClick(event, node)}
+                onDoubleClick={(event) => handleNodeDoubleClick(event, node)}
+                onMouseEnter={(event) => {
+                  setHoveredNodeId(node.id);
+                  setTooltip({ desc: node.desc, x: event.clientX, y: event.clientY });
+                }}
+                onMouseLeave={() => {
+                  setHoveredNodeId(null);
+                  setTooltip(null);
+                }}
+                onMouseMove={(event) => setTooltip((current) => current ? { ...current, x: event.clientX, y: event.clientY } : null)}
+              >
+                <foreignObject
+                  className="graph-node-fo"
+                  x={-objectWidth / 2}
+                  y={-objectHeight / 2}
+                  width={objectWidth}
+                  height={objectHeight}
+                >
+                  <div
+                    className="graph-node-card"
+                    xmlns="http://www.w3.org/1999/xhtml"
+                    style={{
+                      "--node-width": `${width}px`,
+                      "--node-height": `${height}px`,
+                      "--node-accent": category.color,
+                      "--node-pop-delay": `${Math.min(index * 22, 220)}ms`,
+                    }}
+                  >
+                    <span>{node.label}</span>
+                    {due ? <i aria-hidden="true" /> : null}
+                  </div>
+                </foreignObject>
+              </motion.g>
+            );
+          })}
+        </AnimatePresence>
       </svg>
 
       {tooltip && (
@@ -677,100 +1125,26 @@ function GraphCanvas({ nodes, edges, selectedId, onSelect }) {
           {tooltip.desc}
         </div>
       )}
-      <div className="graph-controls" aria-label="图谱缩放">
-        <button onClick={() => zoomFromCenter(0.82)} aria-label="放大">
-          <ZoomIn size={16} />
-        </button>
-        <button onClick={() => zoomFromCenter(1.18)} aria-label="缩小">
-          <ZoomOut size={16} />
-        </button>
-        <button onClick={() => setViewport(graphViewport)} aria-label="重置视图">
-          <RotateCcw size={16} />
-        </button>
-      </div>
-      <div className="graph-hint">滚轮缩放，拖拽空白处平移</div>
     </div>
   );
 }
 
-function GraphFilters({ filters, onChange, visibleCount, totalCount }) {
-  const selectedCategories = new Set(filters.categories);
-
-  function toggleCategory(categoryId) {
-    const next = new Set(filters.categories);
-    if (next.has(categoryId)) next.delete(categoryId);
-    else next.add(categoryId);
-    onChange({ ...filters, categories: [...next] });
-  }
-
-  return (
-    <div className="graph-filters">
-      <label className="search-box graph-search">
-        <Search size={15} />
-        <input
-          value={filters.query}
-          onChange={(event) => onChange({ ...filters, query: event.target.value })}
-          placeholder="搜索概念或解释"
-        />
-        <button
-          className="search-clear"
-          type="button"
-          onClick={(e) => { e.preventDefault(); onChange({ ...filters, query: "" }); }}
-          aria-label="清除搜索"
-        >
-          <X size={10} />
-        </button>
-      </label>
-      <div className="filter-chips">
-        {Object.entries(categories).map(([key, category]) => (
-          <button
-            key={key}
-            className={selectedCategories.size === 0 || selectedCategories.has(key) ? "active" : ""}
-            onClick={() => toggleCategory(key)}
-            style={{ "--chip-color": category.color, "--chip-bg": category.light }}
-          >
-            {category.label}
-          </button>
-        ))}
-      </div>
-      <div className="filter-summary">
-        <Filter size={14} />
-        {visibleCount} / {totalCount}
-      </div>
-    </div>
-  );
-}
-
-function NodeDetail({ node, nodes, edges, onClose, onUpdate, onDelete, onCreateEdge, onUpdateEdge, onDeleteEdge }) {
+function NodeDetail({ node, onClose, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({
     label: node.label,
-    category: node.category,
     desc: node.desc,
     cards: cardsForNode(node).map((card) => ({ ...card })),
   });
-  const [edgeLabels, setEdgeLabels] = useState({});
-  const [relationTarget, setRelationTarget] = useState("");
-  const [relationLabel, setRelationLabel] = useState("相关");
 
   useEffect(() => {
     setEditing(false);
     setDraft({
       label: node.label,
-      category: node.category,
       desc: node.desc,
       cards: cardsForNode(node).map((card) => ({ ...card })),
     });
-    const firstTarget = nodes.find((item) => item.id !== node.id);
-    setRelationTarget(firstTarget?.id || "");
-    setRelationLabel("相关");
-  }, [node, nodes]);
-
-  const relatedEdges = edges.filter((edge) => edge.from === node.id || edge.to === node.id);
-
-  useEffect(() => {
-    setEdgeLabels(Object.fromEntries(edges.filter((edge) => edge.from === node.id || edge.to === node.id).map((edge) => [edge.id, edge.label])));
-  }, [edges, node.id]);
+  }, [node]);
 
   function saveEdit() {
     const label = draft.label.trim();
@@ -778,7 +1152,7 @@ function NodeDetail({ node, nodes, edges, onClose, onUpdate, onDelete, onCreateE
     const desc = draft.desc.trim() || "暂未添加解释。";
     onUpdate(node.id, {
       label,
-      category: draft.category,
+      category: node.category,
       desc,
       cards: draft.cards.map((card, index) =>
         normalizeCard(
@@ -828,91 +1202,76 @@ function NodeDetail({ node, nodes, edges, onClose, onUpdate, onDelete, onCreateE
     }));
   }
 
-  function addRelation() {
-    if (!relationTarget || relationTarget === node.id) return;
-    if (onCreateEdge({ from: node.id, to: relationTarget, label: relationLabel.trim() || "相关" })) {
-      setRelationLabel("相关");
-    }
-  }
-
-  function nodeLabel(nodeId) {
-    return nodes.find((item) => item.id === nodeId)?.label || nodeId;
-  }
-
   const category = categoryFor(node);
 
   return (
-    <aside className="node-detail">
+    <aside className={`node-detail ${editing ? "is-editing" : ""}`}>
       <button className="icon-button close-button" onClick={onClose} aria-label="关闭详情">
         <X size={16} />
       </button>
 
       {editing ? (
-        <div className="node-form">
-          <label>
-            <span>名称</span>
-            <input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
-          </label>
-          <label>
-            <span>分类</span>
-            <select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>
-              {Object.entries(categories).map(([key, item]) => (
-                <option key={key} value={key}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>解释</span>
-            <textarea value={draft.desc} onChange={(event) => setDraft({ ...draft, desc: event.target.value })} />
-          </label>
-          <div className="card-editor">
-            <div className="pane-header">
-              <h3>复习卡片</h3>
-              <button className="secondary-button compact" onClick={addDraftCard}>
-                <Plus size={14} />
-                加卡片
-              </button>
+        <div className="node-form review-card-editor-panel">
+          <div className="review-card-editor-scroll">
+            <div className="review-card-meta-fields">
+              <label>
+                <span>名称</span>
+                <input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
+              </label>
+              <label>
+                <span>解释</span>
+                <textarea value={draft.desc} onChange={(event) => setDraft({ ...draft, desc: event.target.value })} />
+              </label>
             </div>
-            {draft.cards.map((card, index) => (
-              <article key={card.id} className="card-edit-item">
-                <div className="card-edit-title">
-                  <strong>卡片 {index + 1}</strong>
-                  <button
-                    className="icon-button relation-delete"
-                    onClick={() => removeDraftCard(card.id)}
-                    disabled={draft.cards.length === 1}
-                    aria-label={`删除卡片 ${index + 1}`}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <label>
-                  <span>复习问题</span>
-                  <textarea value={card.question} onChange={(event) => updateDraftCard(card.id, { question: event.target.value })} />
-                </label>
-                <label>
-                  <span>卡片答案</span>
-                  <textarea value={card.answer} onChange={(event) => updateDraftCard(card.id, { answer: event.target.value })} />
-                </label>
-                <label>
-                  <span>代码示例</span>
-                  <textarea
-                    className="code-input"
-                    value={card.codeExample}
-                    onChange={(event) => updateDraftCard(card.id, { codeExample: event.target.value })}
-                    placeholder="可选，写最短可运行示例"
-                  />
-                </label>
-              </article>
-            ))}
+            <section className="card-editor">
+              <div className="review-card-editor-header">
+                <h3>复习卡片</h3>
+                <button className="review-card-add-button" onClick={addDraftCard}>
+                  <Plus size={14} />
+                  加卡片
+                </button>
+              </div>
+              <div className="review-card-editor-list">
+                {draft.cards.map((card, index) => (
+                  <article key={card.id} className="card-edit-item">
+                    <div className="card-edit-title">
+                      <strong>卡片 {index + 1}</strong>
+                      <button
+                        className="icon-button review-card-delete-button"
+                        onClick={() => removeDraftCard(card.id)}
+                        disabled={draft.cards.length === 1}
+                        aria-label={`删除卡片 ${index + 1}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <label>
+                      <span>复习问题</span>
+                      <textarea value={card.question} onChange={(event) => updateDraftCard(card.id, { question: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>卡片答案</span>
+                      <textarea value={card.answer} onChange={(event) => updateDraftCard(card.id, { answer: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>代码示例</span>
+                      <textarea
+                        className="code-input"
+                        value={card.codeExample}
+                        onChange={(event) => updateDraftCard(card.id, { codeExample: event.target.value })}
+                        placeholder="可选，写最短可运行示例"
+                      />
+                    </label>
+                  </article>
+                ))}
+              </div>
+            </section>
           </div>
-          <div className="node-actions">
-            <button className="secondary-button" onClick={() => setEditing(false)}>
+          <div className="node-actions review-card-editor-actions">
+            <button className="review-card-cancel-button" onClick={() => setEditing(false)}>
               取消
             </button>
-            <button className="primary-button compact" onClick={saveEdit} disabled={!draft.label.trim()}>
+            <button className="review-card-save-button" onClick={saveEdit} disabled={!draft.label.trim()}>
               <Save size={15} />
               保存
             </button>
@@ -920,174 +1279,264 @@ function NodeDetail({ node, nodes, edges, onClose, onUpdate, onDelete, onCreateE
         </div>
       ) : (
         <>
-          <div className="node-detail-tags">
-            <span className="category-badge" style={{ color: category.color, background: category.light }}>
-              {category.label}
-            </span>
-            <span className={nodeIsDue(node) ? "detail-review-state is-due" : "detail-review-state is-planned"}>
-              {nodeIsDue(node) ? "待复习" : `下次 ${daysUntil(nodeNextReview(node))}`}
-            </span>
-          </div>
-          <h3>{node.label}</h3>
-          <p>{node.desc}</p>
-          <div className="node-meta">
+          <header className="inspector-header">
+            <div className="node-detail-tags">
+              <span className="category-badge" style={{ color: category.color, background: category.light }}>
+                {category.label}
+              </span>
+              <span className={nodeIsDue(node) ? "detail-review-state is-due" : "detail-review-state is-planned"}>
+                {nodeIsDue(node) ? "待复习" : `下次 ${daysUntil(nodeNextReview(node))}`}
+              </span>
+            </div>
+            <h3>{node.label}</h3>
+            <p>{node.desc}</p>
+            <div className="node-actions inspector-actions">
+              <button className="inspector-action" onClick={() => setEditing(true)}>
+                <Edit3 size={15} />
+                编辑
+              </button>
+              <button className="inspector-action is-danger" onClick={() => onDelete(node.id)}>
+                <Trash2 size={15} />
+                删除
+              </button>
+            </div>
+          </header>
+
+          <div className="node-meta inspector-metrics">
             <Stat label="熟练度" value={cardsForNode(node)[0].ef.toFixed(2)} />
             <Stat label="卡片" value={cardsForNode(node).length} />
             <Stat label="待复习" value={cardsForNode(node).filter((card) => isDue(card)).length} />
-            <Stat label="关系" value={relatedEdges.length} />
           </div>
-          <div className="card-fields">
-            {cardsForNode(node).map((card, index) => (
-              <div key={card.id}>
-                <span>卡片 {index + 1}</span>
-                <strong>{card.question}</strong>
-                <p>{card.answer}</p>
-                {card.codeExample ? <pre>{card.codeExample}</pre> : null}
-                <small>
-                  {isDue(card) ? "今天到期" : daysUntil(card.nextReview)} · 已复习 {card.repetitions} 次
-                </small>
-              </div>
-            ))}
-          </div>
+
+          <section className="inspector-section">
+            <h4 className="inspector-section-title">Review</h4>
+            <div className="card-fields">
+              {cardsForNode(node).map((card, index) => (
+                <div key={card.id}>
+                  <span>卡片 {index + 1}</span>
+                  <strong>{card.question}</strong>
+                  <p>{card.answer}</p>
+                  {card.codeExample ? <pre>{card.codeExample}</pre> : null}
+                  <small>
+                    {isDue(card) ? "今天到期" : daysUntil(card.nextReview)} · 已复习 {card.repetitions} 次
+                  </small>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {node.sources.length ? (
-            <div className="source-block">
-              <h4>来源笔记</h4>
+            <section className="source-block inspector-section">
+              <h4 className="inspector-section-title">Sources</h4>
               {node.sources.slice(-2).map((source) => (
                 <p key={`${source.createdAt}-${source.text.slice(0, 12)}`}>{source.text}</p>
               ))}
-            </div>
+            </section>
           ) : null}
-          <div className="node-actions">
-            <button className="secondary-button" onClick={() => setEditing(true)}>
-              <Edit3 size={15} />
-              编辑
-            </button>
-            <button className="danger-button" onClick={() => onDelete(node.id)}>
-              <Trash2 size={15} />
-              删除
-            </button>
-          </div>
         </>
       )}
-
-      <div className="relation-editor">
-        <h4>
-          <Link2 size={14} />
-          关系
-        </h4>
-        {relatedEdges.length ? (
-          <div className="relation-list">
-            {relatedEdges.map((edge) => (
-              <div key={edge.id} className="relation-row">
-                <span>{edge.from === node.id ? `到 ${nodeLabel(edge.to)}` : `来自 ${nodeLabel(edge.from)}`}</span>
-                <input
-                  value={edgeLabels[edge.id] ?? edge.label}
-                  onChange={(event) => setEdgeLabels((labels) => ({ ...labels, [edge.id]: event.target.value }))}
-                  aria-label={`编辑关系 ${edge.label}`}
-                />
-                <button
-                  className="icon-button"
-                  onClick={() => onUpdateEdge(edge.id, { label: edgeLabels[edge.id] || "相关" })}
-                  aria-label={`保存关系 ${edge.label}`}
-                >
-                  <Save size={14} />
-                </button>
-                <button className="icon-button relation-delete" onClick={() => onDeleteEdge(edge.id)} aria-label={`删除关系 ${edge.label}`}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="relation-empty">还没有关系。</p>
-        )}
-        {nodes.length > 1 ? (
-          <div className="relation-create">
-            <select value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)} aria-label="关系目标概念">
-              {nodes
-                .filter((item) => item.id !== node.id)
-                .map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-            </select>
-            <input value={relationLabel} onChange={(event) => setRelationLabel(event.target.value)} aria-label="关系标签" />
-            <button className="secondary-button compact" onClick={addRelation}>
-              <Plus size={14} />
-              连接
-            </button>
-          </div>
-        ) : null}
-      </div>
     </aside>
   );
 }
 
 function GraphView({
   data,
+  maps,
+  currentMap,
   selectedId,
   onSelect,
-  filters,
-  onFiltersChange,
+  onLoadMap,
+  onCreateMap,
+  onDeleteMap,
+  fileActionsAvailable,
+  onOpenMapFile,
+  onImportMap,
+  onExportMap,
   onUpdateNode,
   onDeleteNode,
-  onCreateEdge,
-  onUpdateEdge,
-  onDeleteEdge,
 }) {
-  const filtered = useMemo(() => {
-    const needle = filters.query.trim().toLowerCase();
-    const selectedCategories = new Set(filters.categories);
-    const nodes = data.nodes.filter((node) => {
-      const matchesQuery = !needle || nodeSearchText(node).includes(needle);
-      const matchesCategory = selectedCategories.size === 0 || selectedCategories.has(node.category);
-      return matchesQuery && matchesCategory;
-    });
-    const visibleIds = new Set(nodes.map((node) => node.id));
-    const edges = data.edges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
-    return { nodes, edges };
-  }, [data, filters]);
+  const [detailMode, setDetailMode] = useState("preview");
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [creatingMap, setCreatingMap] = useState(false);
+  const [newMapTitle, setNewMapTitle] = useState("");
+  const [submittingMap, setSubmittingMap] = useState(false);
+  const [fileAction, setFileAction] = useState("");
 
-  const selectedNode = filtered.nodes.find((node) => node.id === selectedId);
+  useEffect(() => {
+    setExpandedIds((current) => {
+      const validIds = new Set(data.nodes.map((node) => node.id));
+      const next = new Set([...current].filter((id) => validIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [data.nodes]);
+
+  const filtered = useMemo(() => {
+    const nodes = mindMapVisibleNodes(data.nodes, expandedIds);
+    const edges = hierarchyEdgesForNodes(nodes);
+    return { nodes, edges };
+  }, [data.nodes, expandedIds]);
+
+  const selectedNode = filtered.nodes.find((node) => node.id === selectedId && !node.graphVirtual);
+
+  function selectPreview(nodeId) {
+    setDetailMode("preview");
+    onSelect(nodeId);
+  }
+
+  function openFullDetail(nodeId) {
+    if (!nodeId) return;
+    onSelect(nodeId);
+    setDetailMode("full");
+  }
+
+  function closeDetail() {
+    setDetailMode("preview");
+    onSelect(null);
+  }
+
+  function toggleNode(nodeId) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+        descendantIdsForNode(data.nodes, nodeId).forEach((id) => next.delete(id));
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }
+
+  async function submitNewMap(event) {
+    event.preventDefault();
+    const title = newMapTitle.trim();
+    if (!title) return;
+    setSubmittingMap(true);
+    const created = await onCreateMap(title);
+    setSubmittingMap(false);
+    if (!created) return;
+    setNewMapTitle("");
+    setCreatingMap(false);
+  }
+
+  async function runFileAction(action, handler) {
+    if (!handler || fileAction) return;
+    setFileAction(action);
+    try {
+      await handler();
+    } finally {
+      setFileAction("");
+    }
+  }
 
   return (
     <section className="surface graph-view">
-      <GraphFilters
-        filters={filters}
-        onChange={onFiltersChange}
-        visibleCount={filtered.nodes.length}
-        totalCount={data.nodes.length}
-      />
+      <div className="map-switcher" aria-label="当前思维导图">
+        <FilterDropdown
+          label="图谱"
+          value={currentMap?.id || ""}
+          options={maps.map((map) => ({ value: map.id, label: map.title }))}
+          onChange={onLoadMap}
+          onDeleteOption={onDeleteMap}
+          disabled={!maps.length}
+        />
+        {creatingMap ? (
+          <form className="map-create-form" onSubmit={submitNewMap}>
+            <input
+              value={newMapTitle}
+              onChange={(event) => setNewMapTitle(event.target.value)}
+              placeholder="新图谱名称"
+              autoFocus
+            />
+            <button className="inspector-action" type="submit" disabled={!newMapTitle.trim() || submittingMap}>
+              {submittingMap ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
+              保存
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => {
+                setCreatingMap(false);
+                setNewMapTitle("");
+              }}
+              aria-label="取消新建"
+            >
+              <X size={14} />
+            </button>
+          </form>
+        ) : (
+          <button className="inspector-action" onClick={() => setCreatingMap(true)}>
+            <Plus size={14} />
+            新建
+          </button>
+        )}
+        {fileActionsAvailable ? (
+          <div className="map-file-actions" aria-label="导图文件操作">
+            <button
+              className="icon-button map-file-button"
+              type="button"
+              onClick={() => runFileAction("open", onOpenMapFile)}
+              disabled={Boolean(fileAction)}
+              aria-label="打开 .mindcode.md"
+              title="打开 .mindcode.md"
+            >
+              {fileAction === "open" ? <Loader2 size={15} className="spin" /> : <FolderOpen size={15} />}
+            </button>
+            <button
+              className="icon-button map-file-button"
+              type="button"
+              onClick={() => runFileAction("import", onImportMap)}
+              disabled={Boolean(fileAction)}
+              aria-label="导入 .mindcode.md"
+              title="导入 .mindcode.md"
+            >
+              {fileAction === "import" ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
+            </button>
+            <button
+              className="icon-button map-file-button"
+              type="button"
+              onClick={() => runFileAction("export", onExportMap)}
+              disabled={Boolean(fileAction)}
+              aria-label="导出 .mindcode.md"
+              title="导出 .mindcode.md"
+            >
+              {fileAction === "export" ? <Loader2 size={15} className="spin" /> : <Download size={15} />}
+            </button>
+          </div>
+        ) : null}
+      </div>
 
-      <GraphCanvas nodes={filtered.nodes} edges={filtered.edges} selectedId={selectedId} onSelect={onSelect} />
+      <GraphCanvas
+        key={currentMap?.id || "current-map"}
+        nodes={filtered.nodes}
+        edges={filtered.edges}
+        selectedId={selectedId}
+        onSelect={selectPreview}
+        onToggleNode={toggleNode}
+        onOpenDetail={openFullDetail}
+      />
 
       {!filtered.nodes.length ? (
         <div className="graph-empty">
           <Search size={34} />
-          <h3>没有匹配的概念</h3>
-          <p>调整关键词或分类筛选。</p>
+          <h3>还没有概念</h3>
+          <p>添加概念后会显示在这里。</p>
         </div>
       ) : null}
 
-      {selectedNode ? (
+      {selectedNode && detailMode === "full" ? (
         <NodeDetail
           node={selectedNode}
-          nodes={data.nodes}
-          edges={data.edges}
-          onClose={() => onSelect(null)}
+          onClose={closeDetail}
           onUpdate={onUpdateNode}
           onDelete={onDeleteNode}
-          onCreateEdge={onCreateEdge}
-          onUpdateEdge={onUpdateEdge}
-          onDeleteEdge={onDeleteEdge}
         />
       ) : null}
     </section>
   );
 }
 
-function LibraryAnimatedRow({ index, node, dueCount, nextReview, isFocused, onOpenNode, onDeleteNode }) {
+function LibraryAnimatedRow({ index, node, dueCount, nextReview, hierarchyDepth = 0, isFocused, onOpenNode, onDeleteNode }) {
   const ref = useRef(null);
   const inView = useInView(ref, { amount: 0.15, triggerOnce: false });
   const categoryMeta = categoryFor(node);
@@ -1096,6 +1545,8 @@ function LibraryAnimatedRow({ index, node, dueCount, nextReview, isFocused, onOp
     <motion.article
       ref={ref}
       className={`library-row ${isFocused ? "is-focused" : ""}`}
+      style={{ "--hierarchy-depth": Math.min(hierarchyDepth, 2) }}
+      aria-level={hierarchyDepth + 1}
       initial={{ opacity: 0, y: 10 }}
       animate={inView ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
       transition={{ duration: 0.2, delay: Math.min(index * 0.04, 0.32), ease: [0.23, 1, 0.32, 1] }}
@@ -1121,45 +1572,27 @@ function LibraryAnimatedRow({ index, node, dueCount, nextReview, isFocused, onOp
 
 function LibraryView({ data, onOpenNode, onDeleteNode }) {
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("all");
-  const [reviewState, setReviewState] = useState("all");
-  const [sortBy, setSortBy] = useState("updated");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const tableRef = useRef(null);
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const relationCounts = data.edges.reduce((counts, edge) => {
-      counts.set(edge.from, (counts.get(edge.from) || 0) + 1);
-      counts.set(edge.to, (counts.get(edge.to) || 0) + 1);
-      return counts;
-    }, new Map());
 
-    return data.nodes
+    const flatRows = data.nodes
       .filter((node) => {
-        const dueCount = cardsForNode(node).filter((card) => isDue(card)).length;
         const matchesQuery = !needle || nodeSearchText(node).includes(needle);
-        const matchesCategory = category === "all" || node.category === category;
-        const matchesReview =
-          reviewState === "all" ||
-          (reviewState === "due" && dueCount > 0) ||
-          (reviewState === "clear" && dueCount === 0);
-        return matchesQuery && matchesCategory && matchesReview;
+        return matchesQuery;
       })
       .map((node) => ({
         node,
         dueCount: cardsForNode(node).filter((card) => isDue(card)).length,
         cardCount: cardsForNode(node).length,
-        relationCount: relationCounts.get(node.id) || 0,
         nextReview: nodeNextReview(node),
       }))
-      .sort((left, right) => {
-        if (sortBy === "label") return left.node.label.localeCompare(right.node.label, "zh-Hans-CN");
-        if (sortBy === "due") return right.dueCount - left.dueCount || left.nextReview - right.nextReview;
-        if (sortBy === "cards") return right.cardCount - left.cardCount || left.node.label.localeCompare(right.node.label, "zh-Hans-CN");
-        return right.node.updatedAt - left.node.updatedAt;
-      });
-  }, [category, data.edges, data.nodes, query, reviewState, sortBy]);
+      .sort((left, right) => right.node.updatedAt - left.node.updatedAt);
+
+    return arrangeRowsByHierarchy(flatRows);
+  }, [data.nodes, query]);
 
   // 筛选/排序变化时重置焦点
   useEffect(() => { setFocusedIndex(-1); }, [rows]);
@@ -1191,46 +1624,27 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
   return (
     <section className="surface library-view">
       <div className="library-toolbar">
-        <label className="search-box library-search">
+        <div className="search-box library-search uiverse-search">
           <Search size={15} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索概念、卡片或来源笔记" />
-          <button
-            className="search-clear"
-            type="button"
-            onClick={(e) => { e.preventDefault(); setQuery(""); }}
-            aria-label="清除搜索"
-          >
-            <X size={10} />
-          </button>
-        </label>
-        <label>
-          <span>分类</span>
-          <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            <option value="all">全部分类</option>
-            {Object.entries(categories).map(([key, item]) => (
-              <option key={key} value={key}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>复习</span>
-          <select value={reviewState} onChange={(event) => setReviewState(event.target.value)}>
-            <option value="all">全部状态</option>
-            <option value="due">今天到期</option>
-            <option value="clear">未到期</option>
-          </select>
-        </label>
-        <label>
-          <span>排序</span>
-          <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
-            <option value="updated">最近更新</option>
-            <option value="due">待复习优先</option>
-            <option value="cards">卡片数量</option>
-            <option value="label">名称</option>
-          </select>
-        </label>
+          <div className="search-float-wrap">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} required />
+            <label>
+              {"搜索概念、卡片或来源笔记".split("").map((ch, index) => (
+                <span key={`${ch}-${index}`} style={{ transitionDelay: `${index * 40}ms` }}>
+                  {ch}
+                </span>
+              ))}
+            </label>
+            <button
+              className="search-clear"
+              type="button"
+              onClick={(e) => { e.preventDefault(); setQuery(""); }}
+              aria-label="清除搜索"
+            >
+              <X size={10} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {rows.length ? (
@@ -1241,13 +1655,14 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
             <span>复习</span>
             <span />
           </div>
-          {rows.map(({ node, dueCount, nextReview }, index) => (
+          {rows.map(({ node, dueCount, nextReview, hierarchyDepth }, index) => (
             <LibraryAnimatedRow
               key={node.id}
               index={index}
               node={node}
               dueCount={dueCount}
               nextReview={nextReview}
+              hierarchyDepth={hierarchyDepth}
               isFocused={focusedIndex === index}
               onOpenNode={onOpenNode}
               onDeleteNode={onDeleteNode}
@@ -1351,115 +1766,207 @@ function NavDock({ view, setView, reviewCount }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+function ReviewFlipCard({
+  card,
+  reviewMode,
+  answerDraft,
+  reviewResult,
+  onAnswerChange,
+  onSubmit,
+  onContinue,
+}) {
+  const cat = categories[card?.category] || categories.new;
+
+  if (!card) return null;
+
+  return (
+    <div className="review-flip-layer">
+      <div className="review-flip-card">
+        <div className="review-flip-inner is-flipped">
+          <div className="review-flip-face review-flip-front">
+            <span>{cat.label}</span>
+            <strong>{card.nodeLabel || card.label}</strong>
+            <small>点击复习</small>
+          </div>
+
+          <div className="review-flip-face review-flip-back">
+            {reviewMode === "answering" ? (
+              <form className="review-flip-back-scroll review-answer-form" onSubmit={onSubmit}>
+                <div className="review-session-field">
+                  <span>问题</span>
+                  <strong>{card.question}</strong>
+                </div>
+                <label>
+                  <span>你的答案</span>
+                  <textarea
+                    value={answerDraft}
+                    onChange={(event) => onAnswerChange(event.target.value)}
+                    placeholder="在卡牌背面输入答案"
+                    autoFocus
+                  />
+                </label>
+                <button className="review-submit-button" type="submit" disabled={!answerDraft.trim()}>
+                  提交答案
+                </button>
+              </form>
+            ) : null}
+
+            {reviewMode === "revealed" && reviewResult ? (
+              <div className="review-flip-back-scroll">
+                <div className={`review-result-banner ${reviewResult.isCorrect ? "is-correct" : "is-wrong"}`}>
+                  <span>{reviewResult.isCorrect ? "掌握" : "忘记"}</span>
+                  <strong>{reviewResult.isCorrect ? "答案匹配，已进入掌握间隔。" : "答案不同，已排到明天复习。"}</strong>
+                </div>
+                <div className="review-session-answer">
+                  <div className="review-session-field">
+                    <span>你的答案</span>
+                    <p>{reviewResult.submittedAnswer}</p>
+                  </div>
+                  <div className="review-session-field">
+                    <span>正确答案</span>
+                    <p>{card.answer}</p>
+                  </div>
+                  {card.codeExample ? (
+                    <pre>
+                      <code>{card.codeExample}</code>
+                    </pre>
+                  ) : null}
+                </div>
+                <div className="review-detail-block">
+                  <span>概念详细</span>
+                  <h4>{card.nodeLabel}</h4>
+                  <p>{card.desc}</p>
+                  <div className="review-detail-stats">
+                    <span>卡片 {card.cardCount}</span>
+                    <span>待复习 {card.dueCount}</span>
+                    <span>已复习 {card.repetitions} 次</span>
+                  </div>
+                  {card.sourceSummary ? <blockquote>{card.sourceSummary}</blockquote> : null}
+                </div>
+                <button className="review-submit-button" onClick={onContinue}>
+                  继续
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ReviewView({ dueCards, onRate }) {
-  const [selectedCard, setSelectedCard] = useState(null);
-  const [flipped, setFlipped] = useState(false);
+  const [selectedCardKey, setSelectedCardKey] = useState("");
+  const [reviewMode, setReviewMode] = useState("idle");
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [reviewResult, setReviewResult] = useState(null);
+  const resultCardKey = reviewResult?.cardKey || "";
+  const galleryCards = useMemo(() => {
+    if (reviewMode !== "revealed" || !reviewResult?.card) return dueCards;
+    return [reviewResult.card, ...dueCards.filter((card) => reviewCardKey(card) !== reviewResult.cardKey)];
+  }, [dueCards, reviewMode, reviewResult]);
+  const selectedCard = useMemo(
+    () =>
+      reviewMode === "revealed" && reviewResult?.card
+        ? reviewResult.card
+        : dueCards.find((card) => reviewCardKey(card) === selectedCardKey) || dueCards[0] || null,
+    [dueCards, reviewMode, reviewResult, selectedCardKey],
+  );
+  const activeCardKey = reviewMode === "revealed" ? resultCardKey : reviewCardKey(selectedCard);
 
-  // 评分后 dueCards 变化 → 重置选中状态
   useEffect(() => {
-    setSelectedCard(null);
-    setFlipped(false);
-  }, [dueCards]);
+    if (!dueCards.length && reviewMode !== "revealed") {
+      setSelectedCardKey("");
+      setReviewMode("idle");
+      setAnswerDraft("");
+      setReviewResult(null);
+      return;
+    }
 
-  function handleSelect(card) {
-    setSelectedCard(card);
-    setFlipped(false);
+    if (reviewMode !== "revealed" && dueCards.length) {
+      const selectedStillDue = dueCards.some((card) => reviewCardKey(card) === selectedCardKey);
+      if (!selectedStillDue) {
+        setSelectedCardKey(reviewCardKey(dueCards[0]));
+        setAnswerDraft("");
+        setReviewMode("idle");
+      }
+    }
+  }, [dueCards, reviewMode, selectedCardKey]);
+
+  const selectCard = useCallback((card) => {
+    if (!card) return;
+    setSelectedCardKey(reviewCardKey(card));
+    setAnswerDraft("");
+    setReviewResult(null);
+    setReviewMode("answering");
+  }, []);
+
+  const deselectCard = useCallback(() => {
+    setSelectedCardKey("");
+    setAnswerDraft("");
+    setReviewResult(null);
+    setReviewMode("idle");
+  }, []);
+
+  function submitAnswer(event) {
+    event.preventDefault();
+    if (!selectedCard || !answerDraft.trim()) return;
+    const isCorrect = isReviewAnswerMatch(answerDraft, selectedCard.answer);
+    const result = {
+      card: selectedCard,
+      cardKey: reviewCardKey(selectedCard),
+      isCorrect,
+      submittedAnswer: answerDraft,
+      quality: isCorrect ? 5 : 1,
+    };
+    setReviewResult(result);
+    setSelectedCardKey(result.cardKey);
+    setReviewMode("revealed");
+    onRate?.(selectedCard, result.quality);
   }
 
-  const cardColor = selectedCard
-    ? reviewCarouselColors[dueCards.indexOf(selectedCard) % reviewCarouselColors.length]
-    : null;
-  const cardCategory = selectedCard ? categoryFor(selectedCard) : null;
+  function continueReview() {
+    const nextCard = dueCards.find((card) => reviewCardKey(card) !== resultCardKey);
+    setReviewResult(null);
+    setAnswerDraft("");
+    if (nextCard) {
+      setSelectedCardKey(reviewCardKey(nextCard));
+      setReviewMode("answering");
+    } else {
+      setSelectedCardKey("");
+      setReviewMode("idle");
+    }
+  }
 
   return (
     <section className="surface review-view">
-      {dueCards.length ? (
-        <div className="review-dome-wrap">
-          <CircularGallery
-            cards={dueCards}
-            onSelect={handleSelect}
-            bend={2}
-            borderRadius={0.06}
-            scrollSpeed={2}
-            scrollEase={0.05}
-          />
-          {/* 点空白取消选中：遮罩盖住画廊，z-index 低于面板 */}
-          {selectedCard && (
-            <div
-              className="review-dome-backdrop"
-              onClick={() => { setSelectedCard(null); setFlipped(false); }}
+      {galleryCards.length ? (
+        <div className={`review-workbench ${reviewMode === "idle" ? "is-idle" : "has-active-card"}`}>
+          <div className="review-dome-wrap">
+            <CircularGallery
+              cards={galleryCards}
+              selectedCardKey={activeCardKey}
+              faceState="front"
+              onSelect={selectCard}
+              onDeselect={deselectCard}
+              bend={2}
+              borderRadius={0.06}
+              scrollSpeed={2}
+              scrollEase={0.05}
             />
-          )}
-
-          <AnimatePresence>
-            {selectedCard && (
-              <motion.div
-                className="review-dome-panel"
-                initial={{ y: 48, opacity: 0 }}
-                animate={{ y: 0,  opacity: 1 }}
-                exit={{    y: 48, opacity: 0 }}
-                transition={{ duration: 0.28, ease: [0.23, 1, 0.32, 1] }}
-              >
-                {/* 可翻转卡片 */}
-                <button
-                  className={`review-dome-card ${flipped ? "is-flipped" : ""}`}
-                  style={{ "--carousel-color": cardColor }}
-                  onClick={() => setFlipped(v => !v)}
-                  aria-label={flipped ? "显示正面" : "翻到背面"}
-                >
-                  <span className="review-carousel-flipper">
-                    <span className="review-carousel-face review-carousel-front">
-                      <span className="review-carousel-tag" style={{ color: cardCategory?.color }}>
-                        {cardCategory?.label}
-                      </span>
-                      <strong>{selectedCard.question}</strong>
-                      <small>{selectedCard.label}</small>
-                      <i />
-                    </span>
-                    <span className="review-carousel-face review-carousel-back">
-                      <span className="review-carousel-tag" style={{ color: cardCategory?.color }}>
-                        {cardCategory?.label}
-                      </span>
-                      <strong>{selectedCard.label}</strong>
-                      <span>{selectedCard.answer}</span>
-                      {selectedCard.codeExample ? <code>{selectedCard.codeExample}</code> : null}
-                    </span>
-                  </span>
-                </button>
-
-                {/* 评分面板：翻到背面后出现 */}
-                <AnimatePresence>
-                  {flipped && (
-                    <motion.div
-                      className="review-rate-panel"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{    opacity: 0, y: 10 }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      <p>{selectedCard.label} 的掌握程度如何？</p>
-                      <div className="review-rate-grid">
-                        {[
-                          { quality: 1, label: "忘了",   tone: "lost"     },
-                          { quality: 2, label: "模糊",   tone: "fuzzy"    },
-                          { quality: 4, label: "基本会", tone: "good"     },
-                          { quality: 5, label: "掌握",   tone: "mastered" },
-                        ].map((item) => (
-                          <button
-                            key={item.quality}
-                            className={`review-rate-button ${item.tone}`}
-                            onClick={() => onRate(selectedCard, item.quality)}
-                          >
-                            {item.label}
-                          </button>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            )}
-          </AnimatePresence>
+            {reviewMode !== "idle" && selectedCard ? (
+              <ReviewFlipCard
+                key={activeCardKey}
+                card={selectedCard}
+                reviewMode={reviewMode}
+                answerDraft={answerDraft}
+                reviewResult={reviewResult}
+                onAnswerChange={setAnswerDraft}
+                onSubmit={submitAnswer}
+                onContinue={continueReview}
+              />
+            ) : null}
+          </div>
         </div>
       ) : (
         <div className="empty-state">
@@ -1475,6 +1982,7 @@ function ReviewView({ dueCards, onRate }) {
 function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   const [manualDraft, setManualDraft] = useState({
     label: "",
+    parentId: "",
     desc: "",
     question: "",
     answer: "",
@@ -1482,24 +1990,17 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   });
   const [noteInput, setNoteInput] = useState("");
   const [extracting, setExtracting] = useState(false);
+  const [committingPreview, setCommittingPreview] = useState(false);
   const [extractError, setExtractError] = useState("");
   const [preview, setPreview] = useState(null);
-  const [query, setQuery] = useState("");
-  const [obsidianVault, setObsidianVault] = useState(null);
-  const [readingObsidian, setReadingObsidian] = useState(false);
-  const [summarizingObsidian, setSummarizingObsidian] = useState(false);
-  const [obsidianSourceText, setObsidianSourceText] = useState("");
+  const [scannedDocuments, setScannedDocuments] = useState([]);
+  const [scanningDocuments, setScanningDocuments] = useState(false);
+  const [documentSourceText, setDocumentSourceText] = useState("");
   const [aiConfigStatus, setAiConfigStatus] = useState(null);
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [apiKeyMessage, setApiKeyMessage] = useState("");
   const [savingApiKey, setSavingApiKey] = useState(false);
-
-  const visibleNodes = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return data.nodes;
-    return data.nodes.filter((node) => `${node.label} ${node.desc}`.toLowerCase().includes(needle));
-  }, [data.nodes, query]);
 
   useEffect(() => {
     if (!window.mindcode?.getAiConfigStatus) return;
@@ -1517,7 +2018,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   }
 
   function errorNeedsApiKey(error) {
-    return String(error?.message || error || "").includes("DeepSeek API key");
+    return String(error?.message || error || "").includes("DashScope API key");
   }
 
   async function refreshAiConfigStatus() {
@@ -1537,7 +2038,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       setAiConfigStatus(status);
       setApiKeyDraft("");
       setApiKeyModalOpen(false);
-      onToast("DeepSeek API key 已保存");
+      onToast("DashScope API key 已保存");
     } catch (error) {
       setApiKeyMessage(`保存失败：${error.message}`);
     } finally {
@@ -1554,7 +2055,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       const status = await window.mindcode.clearAiApiKey();
       setAiConfigStatus(status);
       setApiKeyDraft("");
-      onToast("DeepSeek API key 已清除", "warning");
+      onToast("DashScope API key 已清除", "warning");
     } catch (error) {
       setApiKeyMessage(`清除失败：${error.message}`);
     } finally {
@@ -1567,6 +2068,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     if (added) {
       setManualDraft({
         label: "",
+        parentId: "",
         desc: "",
         question: "",
         answer: "",
@@ -1576,18 +2078,26 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   }
 
   function patchPreviewNode(nodeId, patch) {
-    const duplicatePatch =
-      typeof patch.label === "string"
-        ? (() => {
-            const target = data.nodes.find((node) => node.label.toLowerCase() === patch.label.trim().toLowerCase());
-            return target
-              ? { duplicate: true, duplicateTargetId: target.id, mergeMode: "skip", selected: false }
-              : { duplicate: false, duplicateTargetId: "", mergeMode: "new" };
-          })()
-        : {};
     setPreview((current) => ({
       ...current,
-      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch, ...duplicatePatch } : node)),
+      nodes: current.nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              ...patch,
+              cards: node.cards.map((card, index) =>
+                index === 0
+                  ? {
+                      ...card,
+                      question: patch.question ?? card.question,
+                      answer: patch.answer ?? card.answer,
+                      codeExample: patch.codeExample ?? card.codeExample,
+                    }
+                  : card,
+              ),
+            }
+          : node,
+      ),
     }));
   }
 
@@ -1598,108 +2108,54 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     }));
   }
 
-  async function chooseObsidianVault() {
-    if (!window.mindcode?.readObsidianVault) return;
+  async function scanLocalDocuments() {
+    if (!window.mindcode?.scanDocuments) {
+      onToast("本地文档扫描需要在桌面 APP 中使用。", "warning");
+      return;
+    }
 
     setExtractError("");
     const status = aiConfigStatus || (await refreshAiConfigStatus().catch(() => null));
     if (!status?.hasApiKey) {
-      openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
+      openApiKeyModal("AI 扫描本地文档需要 DashScope API key。保存后请重新扫描。");
       return;
     }
 
-    setReadingObsidian(true);
+    setScanningDocuments(true);
     try {
-      const result = await window.mindcode.readObsidianVault();
+      const result = await window.mindcode.scanDocuments();
       if (result?.canceled) return;
-      const notes = (result?.notes || []).map((note, index) => ({ ...note, selected: index < 3 }));
+      const documents = result?.documents || [];
+      const sourceText = formatScannedDocuments(documents);
 
-      setObsidianVault({ ...result, notes });
-      setObsidianSourceText("");
+      setScannedDocuments(documents);
+      setDocumentSourceText(sourceText);
+      setNoteInput(sourceText);
       setPreview(null);
 
-      if (!notes.length) {
-        onToast("这个 Vault 里没有可读取的 Markdown 笔记。", "warning");
+      if (!documents.length || !sourceText) {
+        onToast("没有读取到可扫描的文档内容。", "warning");
         return;
       }
 
       if (result.warning) onToast(result.warning, "warning");
-      else onToast(`已读取 ${notes.length} 篇 Obsidian 笔记`);
+      else onToast(`已扫描 ${documents.length} 个文档`);
     } catch (error) {
       if (errorNeedsApiKey(error)) {
-        openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
+        openApiKeyModal("AI 扫描本地文档需要 DashScope API key。保存后请重新扫描。");
       } else {
-        setExtractError(`读取 Obsidian 失败：${error.message}`);
+        setExtractError(`扫描文档失败：${error.message}`);
       }
     } finally {
-      setReadingObsidian(false);
-    }
-  }
-
-  function toggleObsidianNote(notePath, selected) {
-    setObsidianVault((current) => ({
-      ...current,
-      notes: current.notes.map((note) => (note.path === notePath ? { ...note, selected } : note)),
-    }));
-  }
-
-  function loadSelectedObsidianNotes() {
-    return summarizeSelectedObsidianNotes();
-  }
-
-  async function summarizeSelectedObsidianNotes() {
-    const selectedNotes = obsidianVault?.notes.filter((note) => note.selected) || [];
-    const rawSourceText = formatObsidianNotes(selectedNotes);
-    if (!rawSourceText) {
-      setExtractError("至少选择一篇有内容的 Obsidian 笔记。");
-      return;
-    }
-
-    if (!window.mindcode?.summarizeObsidianNotes) {
-      setExtractError("当前环境不支持 Obsidian AI 总结。");
-      return;
-    }
-
-    setExtractError("");
-    setSummarizingObsidian(true);
-    try {
-      const result = await window.mindcode.summarizeObsidianNotes({ notes: selectedNotes });
-      const summariesByPath = new Map((result.notes || []).map((note) => [note.path, note.summary]));
-      const summarizedNotes = selectedNotes
-        .map((note) => ({
-          path: note.path,
-          summary: summariesByPath.get(note.path) || "",
-        }))
-        .filter((note) => note.summary);
-      const summaryText = formatObsidianSummaries(summarizedNotes);
-
-      if (!summaryText) {
-        setExtractError("AI 没有返回可用的 Obsidian 摘要。");
-        return;
-      }
-
-      setNoteInput(summaryText);
-      setObsidianSourceText(rawSourceText);
-      setPreview(null);
-      onToast(`已总结 ${summarizedNotes.length} 篇 Obsidian 笔记`);
-    } catch (error) {
-      if (errorNeedsApiKey(error)) {
-        openApiKeyModal("Obsidian 导入需要 DeepSeek API key。保存后请重新点击 Obsidian。");
-      } else {
-        setExtractError(`Obsidian 总结失败：${error.message}`);
-      }
-    } finally {
-      setSummarizingObsidian(false);
+      setScanningDocuments(false);
     }
   }
 
   async function buildPreview() {
-    const { extractionText, sourceText } = sourceTextForExtraction({
-      summaryText: noteInput,
-      rawSourceText: obsidianSourceText,
-    });
+    const extractionText = noteInput.trim();
+    const sourceText = (documentSourceText || noteInput).trim();
     if (!extractionText) {
-      setExtractError("先粘贴笔记或代码片段。");
+      setExtractError("先扫描本地文档，或粘贴笔记/代码片段。");
       return;
     }
 
@@ -1709,18 +2165,16 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       const result = await extractConcepts(
         extractionText,
         data.nodes.map((node) => node.label),
+        scannedDocuments.length ? { requireAi: true } : {},
       );
-      const existingById = new Map(data.nodes.map((node) => [node.id, node]));
-      const existingByLabel = new Map(data.nodes.map((node) => [node.label.toLowerCase(), node]));
       const nodes = (result.nodes || []).map((item, index) => {
         const node = normalizeNode(item, `preview-${index}`);
-        const duplicateTarget = existingById.get(node.id) || existingByLabel.get(node.label.toLowerCase());
         return {
           ...node,
-          selected: !duplicateTarget,
-          duplicate: Boolean(duplicateTarget),
-          duplicateTargetId: duplicateTarget?.id || "",
-          mergeMode: duplicateTarget ? "skip" : "new",
+          selected: true,
+          duplicate: false,
+          duplicateTargetId: "",
+          mergeMode: "new",
         };
       });
       const existingIds = new Set(data.nodes.map((node) => node.id));
@@ -1737,6 +2191,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
         nodes,
         edges,
       });
+      setPreviewStep(0);
       if (!nodes.length) onToast("没有提取到新概念，可改用手动建卡。", "warning");
     } catch (error) {
       setExtractError(`提取失败：${error.message}`);
@@ -1745,16 +2200,22 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     }
   }
 
-  function acceptPreview() {
-    if (!preview) return;
-    const committed = onAcceptExtraction({
-      nodes: preview.nodes.filter((node) => node.selected || node.mergeMode === "append-card"),
-      edges: preview.edges.filter((edge) => edge.selected),
-      sourceText: preview.sourceText,
-    });
-    if (committed) {
-      setPreview(null);
-      setNoteInput("");
+  async function acceptPreview() {
+    if (!preview || committingPreview) return;
+    setCommittingPreview(true);
+    try {
+      const committed = await onAcceptExtraction({
+        nodes: preview.nodes.filter((node) => node.selected || node.mergeMode === "append-card"),
+        edges: preview.edges.filter((edge) => edge.selected),
+        sourceText: preview.sourceText,
+      });
+      if (committed) {
+        setPreview(null);
+        setPreviewStep(0);
+        setNoteInput("");
+      }
+    } finally {
+      setCommittingPreview(false);
     }
   }
 
@@ -1763,8 +2224,13 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
 
   const previewEndpointOptions = preview ? [...data.nodes, ...preview.nodes] : [];
   const previewWillWrite = preview?.nodes.some((node) => node.selected || node.mergeMode === "append-card");
-  const selectedObsidianCount = obsidianVault?.notes.filter((note) => note.selected).length || 0;
-  const providerLabel = aiConfigStatus?.hasApiKey ? "DeepSeek" : "API Key";
+  const providerLabel = aiConfigStatus?.hasApiKey ? "Qwen" : "API Key";
+  const parentOptions = data.nodes;
+  const scannedDocumentNameCounts = scannedDocuments.reduce((counts, document) => {
+    const displayName = displayNameForDocument(document);
+    counts.set(displayName, (counts.get(displayName) || 0) + 1);
+    return counts;
+  }, new Map());
 
   const manualHasLabel = manualDraft.label.trim().length > 0;
   const manualHasDesc = manualDraft.desc.trim().length > 0;
@@ -1773,18 +2239,26 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   const previewAnswer = manualDraft.answer.trim() || manualDraft.desc.trim();
 
   function goToPreviewStep(index) {
-    setPreviewStep(Math.max(0, Math.min(index, (preview?.nodes.length ?? 0))));
+    setPreviewStep(Math.max(0, Math.min(index, preview?.nodes.length ?? 0)));
   }
 
   const currentPreviewNode = preview?.nodes[previewStep] ?? null;
-  const isOnEdgesStep = preview && previewStep >= preview.nodes.length;
+  const isOnEdgesStep = Boolean(preview) && previewStep >= preview.nodes.length;
 
   return (
     <section className="surface add-view">
+      <header className="add-workspace-header">
+        <span>Add Concept Workspace</span>
+        <h2>新建概念</h2>
+        <p>Scan local documents into a mind map, or add a single concept manually.</p>
+      </header>
       <div className="add-workbench">
-        <div className="add-pane">
+        <div className="add-pane notes-pane">
           <div className="pane-header">
-            <h3>从笔记提取</h3>
+            <div>
+              <h3>Scan Local Documents</h3>
+              <p>选择本地文档或文件夹，让 AI 生成一张新的思维导图草稿。</p>
+            </div>
             <div className="pane-actions">
               {window.mindcode?.getAiConfigStatus ? (
                 <button className="secondary-button compact" onClick={() => openApiKeyModal()} disabled={savingApiKey}>
@@ -1792,58 +2266,49 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   {providerLabel}
                 </button>
               ) : null}
-              {window.mindcode?.readObsidianVault ? (
-                <button className="secondary-button compact" onClick={chooseObsidianVault} disabled={readingObsidian}>
-                  {readingObsidian ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
-                  {readingObsidian ? "读取中" : "Obsidian"}
-                </button>
-              ) : (
-                <span>先预览后入库</span>
-              )}
+              <button className="secondary-button compact" onClick={scanLocalDocuments} disabled={scanningDocuments}>
+                {scanningDocuments ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
+                {scanningDocuments ? "扫描中" : "选择文档"}
+              </button>
             </div>
           </div>
           <label>
-            <span>笔记或代码</span>
+            <span>文档内容</span>
             <textarea
+              className="notes-editor"
               value={noteInput}
-              onChange={(event) => setNoteInput(event.target.value)}
-              placeholder="粘贴一段学习笔记。离线时会使用 mock 提取器，仍然先生成草稿供你确认。"
+              onChange={(event) => {
+                setNoteInput(event.target.value);
+                setDocumentSourceText("");
+                setScannedDocuments([]);
+              }}
+              placeholder="选择本地文档后会自动填入内容。也可以直接粘贴文本生成草稿。"
             />
           </label>
-          {obsidianVault ? (
-            <section className="obsidian-sync" aria-label="Obsidian 同步">
-              <div className="obsidian-sync-summary">
-                <strong>{obsidianVault.vaultName}</strong>
-                <span>
-                  已选 {selectedObsidianCount} / {obsidianVault.notes.length}
-                </span>
+          {scannedDocuments.length ? (
+            <section className="local-document-sync" aria-label="本地文档扫描">
+              <div className="local-document-sync-summary">
+                <strong>Local Documents</strong>
+                <span>已读取 {scannedDocuments.length} 个文件</span>
               </div>
-              <div className="obsidian-note-list">
-                {obsidianVault.notes.map((note) => (
-                  <label key={note.path} className="obsidian-note-row">
-                    <input
-                      type="checkbox"
-                      checked={note.selected}
-                      onChange={(event) => toggleObsidianNote(note.path, event.target.checked)}
-                    />
-                    <span>
-                      <strong>{note.path}</strong>
-                      <small>
-                        {note.content.length} 字符{note.truncated ? " · 已截断" : ""}
-                      </small>
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <div className="obsidian-sync-actions">
-                <button
-                  className="secondary-button compact"
-                  onClick={loadSelectedObsidianNotes}
-                  disabled={!selectedObsidianCount || summarizingObsidian}
-                >
-                  {summarizingObsidian ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
-                  {summarizingObsidian ? "总结中" : "总结所选笔记"}
-                </button>
+              <div className="local-document-list">
+                {scannedDocuments.slice(0, 12).map((document) => {
+                  const displayName = displayNameForDocument(document);
+                  const relativePath = document.relativePath || displayName;
+                  const isDuplicateName = scannedDocumentNameCounts.get(displayName) > 1;
+                  const showRelativePath = relativePath !== displayName || isDuplicateName;
+                  return (
+                    <div key={document.path} className="local-document-row" title={relativePath}>
+                      <span>
+                        <strong>{displayName}</strong>
+                        {showRelativePath ? <small className={isDuplicateName ? "is-duplicate-path" : ""}>{relativePath}</small> : null}
+                        <small>
+                          {document.text.length} 字符{document.truncated ? " · 已截断" : ""}
+                        </small>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           ) : null}
@@ -1851,15 +2316,17 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
           <div className="action-row">
             <button className="primary-button ai-action" onClick={buildPreview} disabled={extracting || !noteInput.trim()}>
               {extracting ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
-              {extracting ? "提取中" : "生成草稿"}
+              {extracting ? "Generating" : "Generate Mind Map Draft"}
             </button>
           </div>
         </div>
 
         <div className="add-pane manual-pane">
           <div className="pane-header">
-            <h3>手动建卡</h3>
-            <span>直接创建</span>
+            <div>
+              <h3>Quick Create</h3>
+              <p>快速创建一个概念，并生成第一张复习卡。</p>
+            </div>
           </div>
           <div className="manual-fields">
             <label>
@@ -1869,6 +2336,18 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                 onChange={(event) => setManualDraft({ ...manualDraft, label: event.target.value })}
                 placeholder="例如：Promise.all"
                 autoComplete="off"
+              />
+            </label>
+
+            <label>
+              <span>父级概念 <em>可选</em></span>
+              <FilterDropdown
+                value={manualDraft.parentId}
+                options={[
+                  { value: "", label: "无父级 · 中心/独立主题" },
+                  ...parentOptions.map((node) => ({ value: node.id, label: node.label })),
+                ]}
+                onChange={(value) => setManualDraft({ ...manualDraft, parentId: value })}
               />
             </label>
 
@@ -1975,7 +2454,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
           <div className="action-row">
             <button className="primary-button" onClick={submit} disabled={!manualDraft.label.trim()}>
               <CirclePlus size={16} />
-              创建卡片
+              Create Concept
             </button>
           </div>
         </div>
@@ -1984,10 +2463,13 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       {preview ? (
         <div className="extraction-preview">
           <div className="pane-header">
-            <h3>提取草稿</h3>
+            <div>
+              <h3>Draft Preview</h3>
+              <p>逐个确认概念，再写入知识图谱。</p>
+            </div>
             <div className="preview-stepper-nav">
               <span className="preview-step-count">
-                {isOnEdgesStep ? "关系" : `${previewStep + 1} / ${preview.nodes.length}`}
+                {isOnEdgesStep ? "确认写入" : `${previewStep + 1} / ${preview.nodes.length}`}
               </span>
               <button
                 className="icon-button"
@@ -2000,8 +2482,8 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
               <button
                 className="icon-button"
                 onClick={() => goToPreviewStep(previewStep + 1)}
-                disabled={isOnEdgesStep}
                 aria-label="下一个"
+                disabled={isOnEdgesStep}
               >
                 ›
               </button>
@@ -2022,19 +2504,20 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                 {currentPreviewNode.duplicate ? (
                   <div className="preview-duplicate-banner">
                     <span>与已有概念重名</span>
-                    <select
+                    <FilterDropdown
                       value={currentPreviewNode.mergeMode}
-                      onChange={(event) =>
+                      options={[
+                        { value: "skip", label: "跳过" },
+                        { value: "append-card", label: "附加卡片到已有概念" },
+                        { value: "new", label: "改名后新建" },
+                      ]}
+                      onChange={(value) =>
                         patchPreviewNode(currentPreviewNode.id, {
-                          mergeMode: event.target.value,
-                          selected: event.target.value === "new" ? currentPreviewNode.selected : false,
+                          mergeMode: value,
+                          selected: value === "new" ? currentPreviewNode.selected : false,
                         })
                       }
-                    >
-                      <option value="skip">跳过</option>
-                      <option value="append-card">附加卡片到已有概念</option>
-                      <option value="new">改名后新建</option>
-                    </select>
+                    />
                   </div>
                 ) : null}
                 <div className="preview-fields">
@@ -2044,11 +2527,24 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   </label>
                   <label>
                     <span>分类</span>
-                    <select value={currentPreviewNode.category} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { category: event.target.value })}>
-                      {Object.entries(categories).map(([key, item]) => (
-                        <option key={key} value={key}>{item.label}</option>
-                      ))}
-                    </select>
+                    <FilterDropdown
+                      value={currentPreviewNode.category}
+                      options={categoryOptions}
+                      onChange={(value) => patchPreviewNode(currentPreviewNode.id, { category: value })}
+                    />
+                  </label>
+                  <label>
+                    <span>父级概念</span>
+                    <FilterDropdown
+                      value={currentPreviewNode.parentId || ""}
+                      options={[
+                        { value: "", label: "无父级 · 中心/独立主题" },
+                        ...previewEndpointOptions
+                          .filter((node) => node.id !== currentPreviewNode.id)
+                          .map((node) => ({ value: node.id, label: node.label })),
+                      ]}
+                      onChange={(value) => patchPreviewNode(currentPreviewNode.id, { parentId: value })}
+                    />
                   </label>
                   <label>
                     <span>解释</span>
@@ -2106,17 +2602,17 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                           onChange={(event) => patchPreviewEdge(edge.id, { selected: event.target.checked })}
                           aria-label={`写入关系 ${edge.label}`}
                         />
-                        <select value={edge.from} onChange={(event) => patchPreviewEdge(edge.id, { from: event.target.value })}>
-                          {previewEndpointOptions.map((node, index) => (
-                            <option key={`from-${edge.id}-${node.id}-${index}`} value={node.id}>{node.label}</option>
-                          ))}
-                        </select>
+                        <FilterDropdown
+                          value={edge.from}
+                          options={previewEndpointOptions.map((node) => ({ value: node.id, label: node.label }))}
+                          onChange={(value) => patchPreviewEdge(edge.id, { from: value })}
+                        />
                         <input value={edge.label} onChange={(event) => patchPreviewEdge(edge.id, { label: event.target.value })} />
-                        <select value={edge.to} onChange={(event) => patchPreviewEdge(edge.id, { to: event.target.value })}>
-                          {previewEndpointOptions.map((node, index) => (
-                            <option key={`to-${edge.id}-${node.id}-${index}`} value={node.id}>{node.label}</option>
-                          ))}
-                        </select>
+                        <FilterDropdown
+                          value={edge.to}
+                          options={previewEndpointOptions.map((node) => ({ value: node.id, label: node.label }))}
+                          onChange={(value) => patchPreviewEdge(edge.id, { to: value })}
+                        />
                       </div>
                     ))}
                   </div>
@@ -2124,19 +2620,24 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   <p className="relation-empty">没有提取到关系，入库后可在节点详情里手动连接。</p>
                 )}
                 <div className="preview-actions">
-                  <button className="secondary-button" onClick={() => { setPreview(null); setPreviewStep(0); }}>
+                  <button className="secondary-button" onClick={() => { setPreview(null); setPreviewStep(0); }} disabled={committingPreview}>
                     丢弃草稿
                   </button>
-                  <button className="primary-button" onClick={() => { acceptPreview(); setPreviewStep(0); }} disabled={!previewWillWrite}>
-                    <Save size={16} />
-                    确认写入
+                  <button className="primary-button" onClick={acceptPreview} disabled={!previewWillWrite || committingPreview}>
+                    {committingPreview ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+                    {committingPreview ? "写入中" : "确认写入"}
                   </button>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
-      ) : null}
+      ) : (
+        <div className="add-empty-state">
+          <strong>Knowledge will appear here</strong>
+          <span>Create from notes or add manually.</span>
+        </div>
+      )}
       <ApiKeyModal
         open={apiKeyModalOpen}
         status={aiConfigStatus}
@@ -2154,14 +2655,14 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
 
 export function App() {
   const [data, setData] = useState(() => normalizeMindCodeData(seedData()));
+  const [availableMaps, setAvailableMaps] = useState([]);
+  const [currentMap, setCurrentMap] = useState(null);
   const [view, setView] = useState("graph");
   const [selectedId, setSelectedId] = useState(null);
-  const [graphFilters, setGraphFilters] = useState({ query: "", categories: [] });
   const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [dataTask, setDataTask] = useState("");
   const [toast, setToast] = useState(null);
   const skipSave = useRef(true);
+  const saveHandle = useRef(null);
 
   const dueCards = useMemo(() => reviewQueue(data.nodes), [data.nodes]);
 
@@ -2173,10 +2674,12 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadData()
+    loadInitialMindMap()
       .then((result) => {
         if (cancelled) return;
         setData(normalizeMindCodeData(result.data));
+        setAvailableMaps(result.maps || (result.map ? [result.map] : []));
+        setCurrentMap(result.map || null);
         setLoaded(true);
         skipSave.current = true;
         writeLocalCache(result.data);
@@ -2201,14 +2704,201 @@ export function App() {
     }
 
     const handle = window.setTimeout(() => {
-      setSaving(true);
-      saveData({ ...data, updatedAt: Date.now() })
-        .catch((error) => showToast(`保存失败：${error.message}`, "warning"))
-        .finally(() => setSaving(false));
+      saveHandle.current = null;
+      saveCurrentMindMap(currentMap, { ...data, updatedAt: Date.now() })
+        .then((result) => {
+          if (result?.map) {
+            setCurrentMap(result.map);
+            setAvailableMaps((maps) => {
+              const byId = new Map(maps.map((map) => [map.id, map]));
+              byId.set(result.map.id, result.map);
+              return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, "zh-Hans-CN"));
+            });
+          }
+        })
+        .catch((error) => showToast(`保存失败：${error.message}`, "warning"));
     }, 250);
+    saveHandle.current = handle;
 
-    return () => window.clearTimeout(handle);
-  }, [data, loaded, showToast]);
+    return () => {
+      window.clearTimeout(handle);
+      if (saveHandle.current === handle) saveHandle.current = null;
+    };
+  }, [currentMap, data, loaded, showToast]);
+
+  const reloadMaps = useCallback(async () => {
+    if (!window.mindcode?.listMaps) return;
+    const result = await window.mindcode.listMaps();
+    setAvailableMaps(result.maps || []);
+  }, []);
+
+  const loadMapById = useCallback(
+    async (mapId) => {
+      if (!mapId) return;
+      try {
+        const result = window.mindcode?.loadMap ? await window.mindcode.loadMap({ id: mapId }) : null;
+        if (!result?.data) return;
+        skipSave.current = true;
+        setData(normalizeMindCodeData(result.data));
+        setCurrentMap(result.map);
+        setSelectedId(null);
+        localStorage.setItem(currentMapStorageKey, result.map.id);
+        if (window.mindcode?.listMaps) await reloadMaps();
+        showToast(`已打开 ${result.map.title}`);
+      } catch (error) {
+        showToast(`打开失败：${error.message}`, "warning");
+      }
+    },
+    [reloadMaps, showToast],
+  );
+
+  const deleteMapById = useCallback(
+    async (mapId) => {
+      const map = availableMaps.find((item) => item.id === mapId);
+      if (!map || !window.mindcode?.deleteMap) return;
+      const message = map.external ? `从最近打开列表移除「${map.title}」？原文件不会被删除。` : `删除图谱「${map.title}」？此操作无法撤销。`;
+      if (!window.confirm(message)) return;
+
+      try {
+        if (currentMap?.id === mapId) {
+          window.clearTimeout(saveHandle.current);
+          saveHandle.current = null;
+          skipSave.current = true;
+        }
+        const result = await window.mindcode.deleteMap({ id: mapId });
+        const maps = result.maps || [];
+        setAvailableMaps(maps);
+        if (currentMap?.id !== mapId) {
+          showToast(map.external ? `已移除 ${map.title}` : `已删除 ${map.title}`);
+          return;
+        }
+
+        const nextMap = maps[0];
+        if (!nextMap) {
+          const fallbackData = normalizeMindCodeData({
+            nodes: [
+              normalizeNode({
+                label: "MindCode",
+                category: "core",
+                desc: "新的思维导图中心主题。",
+              }),
+            ],
+            edges: [],
+          });
+          const created = await createMindMapFile("MindCode", fallbackData);
+          skipSave.current = true;
+          setData(normalizeMindCodeData(created.data));
+          setCurrentMap(created.map);
+          setAvailableMaps(created.map ? [created.map] : []);
+          setSelectedId(created.data.nodes[0]?.id || null);
+          localStorage.setItem(currentMapStorageKey, created.map.id);
+          showToast(map.external ? `已移除 ${map.title}，已创建新的空白图谱` : `已删除 ${map.title}，已创建新的空白图谱`);
+          return;
+        }
+        const loadedMap = await window.mindcode.loadMap({ id: nextMap.id });
+        skipSave.current = true;
+        setData(normalizeMindCodeData(loadedMap.data));
+        setCurrentMap(loadedMap.map);
+        setSelectedId(null);
+        localStorage.setItem(currentMapStorageKey, loadedMap.map.id);
+        showToast(map.external ? `已移除 ${map.title}` : `已删除 ${map.title}`);
+      } catch (error) {
+        showToast(`删除失败：${error.message}`, "warning");
+      }
+    },
+    [availableMaps, currentMap, showToast],
+  );
+
+  const openMapResult = useCallback(
+    (result, messagePrefix) => {
+      if (!result?.data || !result?.map) return false;
+      const normalized = normalizeMindCodeData(result.data);
+      skipSave.current = true;
+      setData(normalized);
+      setCurrentMap(result.map);
+      setSelectedId(normalized.nodes[0]?.id || null);
+      setView("graph");
+      setAvailableMaps((maps) => {
+        const byId = new Map(maps.map((map) => [map.id, map]));
+        byId.set(result.map.id, result.map);
+        return [...byId.values()].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0) || left.title.localeCompare(right.title, "zh-Hans-CN"));
+      });
+      localStorage.setItem(currentMapStorageKey, result.map.id);
+      showToast(`${messagePrefix} ${result.map.title}`);
+      return true;
+    },
+    [showToast],
+  );
+
+  const handleOpenMapFile = useCallback(async () => {
+    try {
+      const result = await openMindMapFile();
+      if (result?.browserOnly) {
+        showToast("浏览器预览不支持打开本地导图文件", "warning");
+        return;
+      }
+      if (!result?.canceled) openMapResult(result, "已打开");
+    } catch (error) {
+      showToast(`打开失败：${error.message}`, "warning");
+    }
+  }, [openMapResult, showToast]);
+
+  const handleImportMap = useCallback(async () => {
+    try {
+      const result = await importMindMapFile();
+      if (result?.browserOnly) {
+        showToast("浏览器预览不支持导入本地导图文件", "warning");
+        return;
+      }
+      if (!result?.canceled) openMapResult(result, "已导入");
+    } catch (error) {
+      showToast(`导入失败：${error.message}`, "warning");
+    }
+  }, [openMapResult, showToast]);
+
+  const handleExportMap = useCallback(async () => {
+    try {
+      const result = await exportMindMapFile(currentMap, data);
+      if (result?.browserOnly) {
+        showToast("浏览器预览已保存当前导图缓存", "warning");
+        return;
+      }
+      if (!result?.canceled) showToast("已导出 .mindcode.md");
+    } catch (error) {
+      showToast(`导出失败：${error.message}`, "warning");
+    }
+  }, [currentMap, data, showToast]);
+
+  const createBlankMap = useCallback(
+    async (title) => {
+      const normalized = normalizeMindCodeData({
+        nodes: [
+          normalizeNode({
+            label: title,
+            category: "core",
+            desc: "新的思维导图中心主题。",
+          }),
+        ],
+        edges: [],
+      });
+      try {
+        const result = await createMindMapFile(title, normalized);
+        skipSave.current = true;
+        setData(normalizeMindCodeData(result.data));
+        setCurrentMap(result.map);
+        setAvailableMaps((maps) => [result.map, ...maps.filter((map) => map.id !== result.map.id)]);
+        setSelectedId(result.data.nodes[0]?.id || null);
+        setView("graph");
+        localStorage.setItem(currentMapStorageKey, result.map.id);
+        showToast(`已创建 ${result.map.title}`);
+        return true;
+      } catch (error) {
+        showToast(`创建失败：${error.message}`, "warning");
+        return false;
+      }
+    },
+    [showToast],
+  );
 
   const updateNode = (nodeId, patch) => {
     const timestamp = Date.now();
@@ -2246,105 +2936,9 @@ export function App() {
     showToast("概念已删除");
   };
 
-  const exportDataAction = async () => {
-    setDataTask("export");
-    try {
-      const result = window.mindcode?.exportData ? await window.mindcode.exportData(data) : downloadJsonExport(data);
-      if (!result?.canceled) showToast("数据已导出");
-    } catch (error) {
-      showToast(`导出失败：${error.message}`, "warning");
-    } finally {
-      setDataTask("");
-    }
-  };
-
-  const importDataAction = async (file) => {
-    setDataTask("import");
-    try {
-      let result;
-      if (file) {
-        result = { ok: true, data: normalizeMindCodeData(JSON.parse(await file.text())), browserImport: true };
-      } else if (window.mindcode?.importData) {
-        result = await window.mindcode.importData();
-      } else {
-        showToast("请在桌面应用中选择文件，或使用知识库里的文件导入按钮。", "warning");
-        return;
-      }
-
-      if (result?.canceled) return;
-      const nextData = normalizeMindCodeData(result.data);
-      skipSave.current = !result.browserImport;
-      setData(nextData);
-      setGraphFilters({ query: "", categories: [] });
-      setSelectedId(null);
-      showToast(`已导入 ${nextData.nodes.length} 个概念`);
-    } catch (error) {
-      showToast(`导入失败：${error.message}`, "warning");
-    } finally {
-      setDataTask("");
-    }
-  };
-
-  const backupDataAction = async () => {
-    setDataTask("backup");
-    try {
-      if (window.mindcode?.backupData) {
-        await window.mindcode.backupData(data);
-        showToast("备份快照已创建");
-      } else {
-        downloadJsonExport(data);
-        showToast("当前是浏览器预览，已导出 JSON 作为备份");
-      }
-    } catch (error) {
-      showToast(`备份失败：${error.message}`, "warning");
-    } finally {
-      setDataTask("");
-    }
-  };
-
   const openNodeInGraph = (nodeId) => {
-    setGraphFilters({ query: "", categories: [] });
     setSelectedId(nodeId);
     setView("graph");
-  };
-
-  const createEdge = ({ from, to, label }) => {
-    if (!from || !to || from === to) {
-      showToast("关系需要连接两个不同概念", "warning");
-      return false;
-    }
-
-    if (data.edges.some((edge) => edge.from === from && edge.to === to && edge.label === label)) {
-      showToast("相同关系已存在", "warning");
-      return false;
-    }
-
-    const edge = normalizeEdge({ id: `edge-${Date.now()}`, from, to, label }, data.edges.length);
-    setData((previous) => ({
-      ...previous,
-      edges: [...previous.edges, edge],
-      updatedAt: Date.now(),
-    }));
-    showToast("关系已创建");
-    return true;
-  };
-
-  const updateEdge = (edgeId, patch) => {
-    setData((previous) => ({
-      ...previous,
-      edges: previous.edges.map((edge) => (edge.id === edgeId ? normalizeEdge({ ...edge, ...patch }) : edge)),
-      updatedAt: Date.now(),
-    }));
-    showToast("关系已更新");
-  };
-
-  const deleteEdge = (edgeId) => {
-    setData((previous) => ({
-      ...previous,
-      edges: previous.edges.filter((edge) => edge.id !== edgeId),
-      updatedAt: Date.now(),
-    }));
-    showToast("关系已删除");
   };
 
   const handleRate = (card, quality) => {
@@ -2363,14 +2957,9 @@ export function App() {
       ),
       updatedAt: Date.now(),
     }));
-
-    if (dueCards.length <= 1) {
-      setView("graph");
-      showToast("今日复习完成");
-    }
   };
 
-  const handleAdd = ({ label, desc, question, answer, codeExample }) => {
+  const handleAdd = ({ label, parentId, desc, question, answer, codeExample }) => {
     if (!label) {
       showToast("无法添加：请填写概念名称", "warning");
       return false;
@@ -2379,6 +2968,7 @@ export function App() {
     const newNode = normalizeNode(
       {
         label,
+        parentId: parentId || undefined,
         desc: desc || undefined,
         question: question || undefined,
         answer: answer || undefined,
@@ -2402,60 +2992,42 @@ export function App() {
     return true;
   };
 
-  const acceptExtraction = ({ nodes, edges, sourceText }) => {
+  const acceptExtraction = async ({ nodes, edges, sourceText }) => {
     const timestamp = Date.now();
-    const existingIds = new Set(data.nodes.map((node) => node.id));
-    const existingLabels = new Set(data.nodes.map((node) => node.label.toLowerCase()));
-    const existingNodes = new Map(data.nodes.map((node) => [node.id, node]));
+    const sourceSnippet = String(sourceText || "").slice(0, 4000);
     const acceptedIds = new Map();
-    const appendedCards = new Map();
     const acceptedNodes = [];
 
     nodes.forEach((node, index) => {
-      if (node.mergeMode === "append-card") {
-        const target = existingNodes.get(node.duplicateTargetId);
-        if (!target) return;
-        const card = normalizeCard(
-          {
-            ...cardsForNode(node)[0],
-            id: `card-${timestamp}-${index}`,
-            nextReview: timestamp,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-          target,
-        );
-        const next = appendedCards.get(target.id) || [];
-        next.push(card);
-        appendedCards.set(target.id, next);
-        acceptedIds.set(node.id, target.id);
-        return;
-      }
-
       if (!node.selected) return;
       const next = normalizeNode(
         {
           ...node,
           id: undefined,
-          sources: [...node.sources, { text: sourceText, createdAt: timestamp }],
+          sources: sourceSnippet ? [...node.sources, { text: sourceSnippet, createdAt: timestamp }] : node.sources,
         },
-        `extracted-${index}`,
+          `extracted-${index}`,
       );
-      const duplicate = existingIds.has(next.id) || existingLabels.has(next.label.toLowerCase());
-      if (duplicate) return;
-      existingIds.add(next.id);
-      existingLabels.add(next.label.toLowerCase());
       acceptedIds.set(node.id, next.id);
       acceptedNodes.push(next);
     });
 
-    if (!acceptedNodes.length && !appendedCards.size) {
+    if (!acceptedNodes.length) {
       showToast("草稿里没有可写入的新概念", "warning");
       return false;
     }
 
-    const endpointIds = new Set([...data.nodes.map((node) => node.id), ...acceptedNodes.map((node) => node.id)]);
-    const existingEdgeKeys = new Set(data.edges.map((edge) => `${edge.from}:${edge.to}:${edge.label}`));
+    const validParentIds = new Set(acceptedNodes.map((node) => node.id));
+    const resolvedAcceptedNodes = acceptedNodes.map((node) => {
+      const parentId = acceptedIds.get(node.parentId) || node.parentId || "";
+      return {
+        ...node,
+        parentId: parentId && validParentIds.has(parentId) && parentId !== node.id ? parentId : "",
+      };
+    });
+
+    const endpointIds = new Set(resolvedAcceptedNodes.map((node) => node.id));
+    const existingEdgeKeys = new Set();
     const acceptedEdges = edges
       .map((edge, index) =>
         normalizeEdge(
@@ -2475,45 +3047,50 @@ export function App() {
         return valid;
       });
 
-    setData((previous) => ({
-      ...previous,
-      nodes: [
-        ...previous.nodes.map((node) =>
-          appendedCards.has(node.id)
-            ? {
-                ...node,
-                cards: [...cardsForNode(node), ...appendedCards.get(node.id)],
-                sources: [...node.sources, { text: sourceText, createdAt: timestamp }],
-                updatedAt: timestamp,
-              }
-            : node,
-        ),
-        ...acceptedNodes,
-      ],
-      edges: [...previous.edges, ...acceptedEdges],
+    const nextData = normalizeMindCodeData({
+      nodes: resolvedAcceptedNodes,
+      edges: acceptedEdges,
       updatedAt: timestamp,
-    }));
-    setView("graph");
-    setSelectedId(acceptedNodes[0]?.id || [...appendedCards.keys()][0]);
-    showToast(`已写入 ${acceptedNodes.length} 个概念、${[...appendedCards.values()].flat().length} 张附加卡、${acceptedEdges.length} 条关系`);
-    return true;
+    });
+    const title = mapTitleFromData(nextData, "AI Mind Map");
+
+    try {
+      const result = await createMindMapFile(title, nextData);
+      skipSave.current = true;
+      setData(normalizeMindCodeData(result.data));
+      setCurrentMap(result.map);
+      setAvailableMaps((maps) => [result.map, ...maps.filter((map) => map.id !== result.map.id)]);
+      setView("graph");
+      setSelectedId(result.data.nodes[0]?.id || null);
+      localStorage.setItem(currentMapStorageKey, result.map.id);
+      showToast(`已生成新思维导图：${result.map.title}`);
+      return true;
+    } catch (error) {
+      showToast(`创建思维导图失败：${error.message}`, "warning");
+      return false;
+    }
   };
 
   return (
     <div className="app-shell">
+      <AppBrandHeader view={view} currentMap={currentMap} data={data} />
       <main className="main-panel">
         {view === "graph" ? (
           <GraphView
             data={data}
+            maps={availableMaps}
+            currentMap={currentMap}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            filters={graphFilters}
-            onFiltersChange={setGraphFilters}
+            onLoadMap={loadMapById}
+            onCreateMap={createBlankMap}
+            onDeleteMap={window.mindcode?.deleteMap ? deleteMapById : undefined}
+            fileActionsAvailable={Boolean(window.mindcode?.openMapFile && window.mindcode?.importMap && window.mindcode?.exportMap)}
+            onOpenMapFile={handleOpenMapFile}
+            onImportMap={handleImportMap}
+            onExportMap={handleExportMap}
             onUpdateNode={updateNode}
             onDeleteNode={deleteNode}
-            onCreateEdge={createEdge}
-            onUpdateEdge={updateEdge}
-            onDeleteEdge={deleteEdge}
           />
         ) : null}
         {view === "library" ? (

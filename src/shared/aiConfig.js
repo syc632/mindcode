@@ -1,12 +1,13 @@
-import { defaultDeepSeekModel } from "./deepseekExtractor.js";
+import { defaultQwenModel } from "./qwenExtractor.js";
 
-export const aiProvider = "deepseek";
+export const aiProvider = "qwen";
 
 export function normalizeAiConfig(config = {}) {
+  const apiKey = config.provider && config.provider !== aiProvider ? "" : String(config.apiKey || "").trim();
   return {
     provider: aiProvider,
-    model: String(config.model || defaultDeepSeekModel).trim() || defaultDeepSeekModel,
-    apiKey: String(config.apiKey || "").trim(),
+    model: defaultQwenModel,
+    apiKey,
   };
 }
 

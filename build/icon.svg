@@ -1,0 +1,8 @@
+<svg width="1024" height="1024" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MindCode">
+  <rect x="0.75" y="0.75" width="42.5" height="42.5" rx="10" fill="#25233A" stroke="#7C72D6" stroke-opacity="0.34" stroke-width="1.5" />
+  <line x1="15" y1="22" x2="28" y2="13" stroke="#F5F3FF" stroke-width="1.6" stroke-linecap="round" stroke-opacity="0.55" />
+  <line x1="15" y1="22" x2="28" y2="31" stroke="#F5F3FF" stroke-width="1.6" stroke-linecap="round" stroke-opacity="0.55" />
+  <circle cx="15" cy="22" r="4" fill="#F5F3FF" />
+  <circle cx="29" cy="13" r="2.6" fill="#F5F3FF" fill-opacity="0.85" />
+  <circle cx="29" cy="31" r="2.6" fill="#F5F3FF" fill-opacity="0.85" />
+</svg>

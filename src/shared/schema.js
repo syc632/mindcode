@@ -1,5 +1,19 @@
 import { seedData } from "./seedData.js";
 
+export const mindCodeNodeLimit = 1_000;
+export const mindCodeEdgeLimit = 2_000;
+export const mindCodeCardLimit = 50;
+export const mindCodeSourceLimit = 50;
+export const mindCodeLabelCharLimit = 120;
+export const mindCodeQuestionCharLimit = 500;
+export const mindCodeTextCharLimit = 4_000;
+export const mindCodeCodeCharLimit = 8_000;
+export const mindCodeCategoryCharLimit = 32;
+
+function limitedText(value, limit) {
+  return String(value || "").trim().slice(0, limit);
+}
+
 export function slugify(value) {
   return String(value)
     .trim()
@@ -12,15 +26,15 @@ export function slugify(value) {
 
 export function normalizeCard(card, node, fallbackId = "card") {
   const timestamp = Date.now();
-  const nodeLabel = String(node?.label || node?.id || "概念").trim();
-  const desc = String(node?.desc || "暂未添加解释。").trim();
+  const nodeLabel = limitedText(node?.label || node?.id || "概念", mindCodeLabelCharLimit);
+  const desc = limitedText(node?.desc || "暂未添加解释。", mindCodeTextCharLimit);
   const id = slugify(card?.id || fallbackId) || fallbackId;
 
   return {
     id,
-    question: String(card?.question || node?.question || `如何解释 ${nodeLabel}？`).trim(),
-    answer: String(card?.answer || node?.answer || desc).trim(),
-    codeExample: String(card?.codeExample || node?.codeExample || "").trim(),
+    question: limitedText(card?.question || node?.question || `如何解释 ${nodeLabel}？`, mindCodeQuestionCharLimit),
+    answer: limitedText(card?.answer || node?.answer || desc, mindCodeTextCharLimit),
+    codeExample: limitedText(card?.codeExample || node?.codeExample || "", mindCodeCodeCharLimit),
     ef: Number(card?.ef ?? node?.ef ?? 2.5),
     interval: Number(card?.interval ?? node?.interval ?? 1),
     repetitions: Number(card?.repetitions ?? node?.repetitions ?? 0),
@@ -33,15 +47,17 @@ export function normalizeCard(card, node, fallbackId = "card") {
 export function normalizeNode(node, fallbackId = "concept") {
   const timestamp = Date.now();
   const id = slugify(node?.id || node?.label || fallbackId) || fallbackId;
-  const label = String(node?.label || id).trim();
-  const desc = String(node?.desc || "暂未添加解释。").trim();
+  const label = limitedText(node?.label || id, mindCodeLabelCharLimit);
+  const desc = limitedText(node?.desc || "暂未添加解释。", mindCodeTextCharLimit);
+  const parentId = slugify(node?.parentId || "");
   const cardSource = Array.isArray(node?.cards) && node.cards.length ? node.cards : [{}];
-  const cards = cardSource.map((card, index) => normalizeCard(card, { ...node, id, label, desc }, `card-${index + 1}`));
+  const cards = cardSource.slice(0, mindCodeCardLimit).map((card, index) => normalizeCard(card, { ...node, id, label, desc }, `card-${index + 1}`));
   const firstCard = cards[0];
   return {
     id,
+    parentId: parentId && parentId !== id ? parentId : "",
     label,
-    category: node?.category || "new",
+    category: limitedText(node?.category || "new", mindCodeCategoryCharLimit) || "new",
     desc,
     question: firstCard.question,
     answer: firstCard.answer,
@@ -49,8 +65,9 @@ export function normalizeNode(node, fallbackId = "concept") {
     cards,
     sources: Array.isArray(node?.sources)
       ? node.sources
+          .slice(0, mindCodeSourceLimit)
           .map((source) => ({
-            text: String(source?.text || "").trim(),
+            text: limitedText(source?.text, mindCodeTextCharLimit),
             createdAt: Number(source?.createdAt ?? timestamp),
           }))
           .filter((source) => source.text)
@@ -71,17 +88,44 @@ export function normalizeEdge(edge, index = 0) {
     id: edge?.id || `edge-${from}-${to}-${index}`,
     from,
     to,
-    label: String(edge?.label || "相关").trim().slice(0, 12),
+    label: limitedText(edge?.label || "相关", 12),
   };
 }
 
 export function normalizeMindCodeData(data) {
   if (!data || typeof data !== "object") return seedData();
-  const nodes = Array.isArray(data.nodes) ? data.nodes.map((item, i) => normalizeNode(item, `concept-${i}`)) : [];
-  const nodeIds = new Set(nodes.map((item) => item.id));
+  const usedIds = new Set();
+  const idAliases = new Map();
+  const normalizedNodes = Array.isArray(data.nodes)
+    ? data.nodes.slice(0, mindCodeNodeLimit).map((item, i) => {
+        const parentId = slugify(item?.parentId || "");
+        const node = normalizeNode(item, `concept-${i}`);
+        const originalId = node.id;
+        let id = originalId;
+        let suffix = 2;
+        while (usedIds.has(id)) {
+          id = `${originalId}-${suffix}`;
+          suffix += 1;
+        }
+        usedIds.add(id);
+        if (!idAliases.has(originalId)) idAliases.set(originalId, id);
+        return { ...node, id, parentId };
+      })
+    : [];
+  const nodeIds = new Set(normalizedNodes.map((item) => item.id));
+  const nodes = normalizedNodes.map((node) => ({
+    ...node,
+    parentId: idAliases.has(node.parentId) && idAliases.get(node.parentId) !== node.id ? idAliases.get(node.parentId) : "",
+  }));
   const edges = Array.isArray(data.edges)
     ? data.edges
+        .slice(0, mindCodeEdgeLimit)
         .map(normalizeEdge)
+        .map((edge) => ({
+          ...edge,
+          from: idAliases.get(edge.from) || edge.from,
+          to: idAliases.get(edge.to) || edge.to,
+        }))
         .filter((edge) => edge.from && edge.to && nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to)
     : [];
 

@@ -9,16 +9,18 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
-    "package:mac": "npm run build && electron-packager . MindCode --platform=darwin --arch=arm64 --out=release --overwrite --prune=true --app-bundle-id=com.mindcode.desktop --ignore=^/release$ --ignore=^/\\.git$",
+    "package:mac": "npm run build && electron-packager . MindCode --platform=darwin --arch=arm64 --out=release --overwrite --prune=true --app-bundle-id=com.mindcode.desktop --icon=build/icon.icns --ignore=^/release$ --ignore=^/\\.git$",
+    "package:win": "npm run build && electron-packager . MindCode --platform=win32 --arch=x64 --out=release --overwrite --prune=true --ignore=^/release$ --ignore=^/\\.git$",
     "start": "electron .",
     "test": "vitest run",
     "lint": "eslint ."
   },
   "dependencies": {
-    "@use-gesture/react": "^10.3.1",
     "lucide-react": "^0.468.0",
+    "mammoth": "^1.12.0",
     "motion": "^12.40.0",
     "ogl": "^1.0.11",
+    "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
