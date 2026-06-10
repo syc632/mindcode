@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useInView } from "motion/react";
 import CircularGallery from "./CircularGallery.jsx";
+import { MarkdownText } from "./components/MarkdownText.jsx";
 import { MindLogo } from "./components/MindLogo.jsx";
 import { NavDock } from "./components/NavDock.jsx";
 import {
@@ -958,7 +959,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
                 <div key={card.id}>
                   <span>卡片 {index + 1}</span>
                   <strong>{card.question}</strong>
-                  <p>{card.answer}</p>
+                  <MarkdownText text={card.answer} />
                   {card.codeExample ? <pre>{card.codeExample}</pre> : null}
                   <small>
                     {isDue(card) ? "今天到期" : daysUntil(card.nextReview)} · 已复习 {card.repetitions} 次
@@ -1383,7 +1384,7 @@ function ReviewFlipCard({
                   </div>
                   <div className="review-session-field">
                     <span>正确答案</span>
-                    <p>{card.answer}</p>
+                    <MarkdownText text={card.answer} />
                   </div>
                   {card.codeExample ? (
                     <pre>
