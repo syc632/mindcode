@@ -57,10 +57,10 @@ export function NavDock({ view, setView, reviewCount }) {
   const mouseX = useMotionValue(Infinity);
 
   const items = [
-    { id: "graph",   label: "图谱",   icon: GitBranch },
-    { id: "library", label: "知识库", icon: LibraryBig },
-    { id: "review",  label: "复习",   icon: RotateCcw,  badge: reviewCount || null },
-    { id: "add",     label: "添加",   icon: CirclePlus },
+    { id: "graph",   label: "Map",     icon: GitBranch },
+    { id: "library", label: "Library", icon: LibraryBig },
+    { id: "review",  label: "Review",  icon: RotateCcw,  badge: reviewCount || null },
+    { id: "add",     label: "Add",     icon: CirclePlus },
   ];
 
   return (

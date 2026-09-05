@@ -27,6 +27,7 @@ import { daysUntil, isDue, sm2 } from "./shared/sm2.js";
 import { normalizeCard, normalizeEdge, normalizeMindCodeData, normalizeNode } from "./shared/schema.js";
 import { mapTitleFromData } from "./shared/mindMapMarkdown.js";
 import { isReviewAnswerMatch } from "./shared/reviewAnswer.js";
+import { sourcesForAcceptedNode } from "./shared/extractionSources.js";
 import {
   arrangeRowsByHierarchy,
   curveDamping,
@@ -60,6 +61,22 @@ const storageKey = "mindcode-browser-data";
 const currentMapStorageKey = "mindcode-current-map-id";
 const browserMapStorageKey = "mindcode-browser-map";
 const categoryOptions = Object.entries(categories).map(([value, item]) => ({ value, label: item.label }));
+const extractionProgressStages = [
+  { startMs: 0, endMs: 3000, message: "Reading document content...", from: 8, to: 22 },
+  { startMs: 3000, endMs: 10000, message: "AI is identifying concepts...", from: 22, to: 45 },
+  { startMs: 10000, endMs: 20000, message: "Organizing concept relationships...", from: 45, to: 65 },
+  { startMs: 20000, endMs: 40000, message: "Preparing the mind map draft...", from: 65, to: 86 },
+  { startMs: 40000, endMs: 90000, message: "Still working. Larger documents can take over a minute...", from: 86, to: 95 },
+  { startMs: 90000, endMs: Infinity, message: "Still processing. Keep this window open while AI finishes...", from: 95, to: 98 },
+];
+
+function extractionProgressForElapsed(elapsedMs) {
+  const stage = extractionProgressStages.find((item) => elapsedMs >= item.startMs && elapsedMs < item.endMs) ?? extractionProgressStages.at(-1);
+  const stageDuration = Number.isFinite(stage.endMs) ? stage.endMs - stage.startMs : 20000;
+  const elapsedInStage = Math.min(Math.max(elapsedMs - stage.startMs, 0), stageDuration);
+  const percent = Math.round(stage.from + ((stage.to - stage.from) * elapsedInStage) / stageDuration);
+  return { message: stage.message, percent };
+}
 
 function readLocalCache() {
   try {
@@ -793,7 +810,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
   function saveEdit() {
     const label = draft.label.trim();
     if (!label) return;
-    const desc = draft.desc.trim() || "暂未添加解释。";
+    const desc = draft.desc.trim() || "No explanation has been added.";
     onUpdate(node.id, {
       label,
       category: node.category,
@@ -802,7 +819,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
         normalizeCard(
           {
             ...card,
-            question: card.question.trim() || `如何解释 ${label}？`,
+            question: card.question.trim() || `How would you explain ${label}?`,
             answer: card.answer.trim() || desc,
             codeExample: card.codeExample.trim(),
           },
@@ -829,7 +846,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
         normalizeCard(
           {
             id: `card-${Date.now()}`,
-            question: `围绕 ${current.label || node.label} 再问一个问题`,
+            question: `Ask another question about ${current.label || node.label}`,
             answer: current.desc || node.desc,
             nextReview: Date.now(),
           },
@@ -850,7 +867,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
 
   return (
     <aside className={`node-detail ${editing ? "is-editing" : ""}`}>
-      <button className="icon-button close-button" onClick={onClose} aria-label="关闭详情">
+      <button className="icon-button close-button" onClick={onClose} aria-label="Close details">
         <X size={16} />
       </button>
 
@@ -859,51 +876,51 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
           <div className="review-card-editor-scroll">
             <div className="review-card-meta-fields">
               <label>
-                <span>名称</span>
+                <span>Name</span>
                 <input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
               </label>
               <label>
-                <span>解释</span>
+                <span>Explanation</span>
                 <textarea value={draft.desc} onChange={(event) => setDraft({ ...draft, desc: event.target.value })} />
               </label>
             </div>
             <section className="card-editor">
               <div className="review-card-editor-header">
-                <h3>复习卡片</h3>
+                <h3>Review Cards</h3>
                 <button className="review-card-add-button" onClick={addDraftCard}>
                   <Plus size={14} />
-                  加卡片
+                  Add Card
                 </button>
               </div>
               <div className="review-card-editor-list">
                 {draft.cards.map((card, index) => (
                   <article key={card.id} className="card-edit-item">
                     <div className="card-edit-title">
-                      <strong>卡片 {index + 1}</strong>
+                      <strong>Card {index + 1}</strong>
                       <button
                         className="icon-button review-card-delete-button"
                         onClick={() => removeDraftCard(card.id)}
                         disabled={draft.cards.length === 1}
-                        aria-label={`删除卡片 ${index + 1}`}
+                        aria-label={`Delete card ${index + 1}`}
                       >
                         <Trash2 size={14} />
                       </button>
                     </div>
                     <label>
-                      <span>复习问题</span>
+                      <span>Review Question</span>
                       <textarea value={card.question} onChange={(event) => updateDraftCard(card.id, { question: event.target.value })} />
                     </label>
                     <label>
-                      <span>卡片答案</span>
+                      <span>Card Answer</span>
                       <textarea value={card.answer} onChange={(event) => updateDraftCard(card.id, { answer: event.target.value })} />
                     </label>
                     <label>
-                      <span>代码示例</span>
+                      <span>Code Example</span>
                       <textarea
                         className="code-input"
                         value={card.codeExample}
                         onChange={(event) => updateDraftCard(card.id, { codeExample: event.target.value })}
-                        placeholder="可选，写最短可运行示例"
+                        placeholder="Optional, shortest runnable example"
                       />
                     </label>
                   </article>
@@ -913,11 +930,11 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
           </div>
           <div className="node-actions review-card-editor-actions">
             <button className="review-card-cancel-button" onClick={() => setEditing(false)}>
-              取消
+              Cancel
             </button>
             <button className="review-card-save-button" onClick={saveEdit} disabled={!draft.label.trim()}>
               <Save size={15} />
-              保存
+              Save
             </button>
           </div>
         </div>
@@ -929,7 +946,7 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
                 {category.label}
               </span>
               <span className={nodeIsDue(node) ? "detail-review-state is-due" : "detail-review-state is-planned"}>
-                {nodeIsDue(node) ? "待复习" : `下次 ${daysUntil(nodeNextReview(node))}`}
+                {nodeIsDue(node) ? "Due" : `Next ${daysUntil(nodeNextReview(node))}`}
               </span>
             </div>
             <h3>{node.label}</h3>
@@ -937,19 +954,19 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
             <div className="node-actions inspector-actions">
               <button className="inspector-action" onClick={() => setEditing(true)}>
                 <Edit3 size={15} />
-                编辑
+                Edit
               </button>
               <button className="inspector-action is-danger" onClick={() => onDelete(node.id)}>
                 <Trash2 size={15} />
-                删除
+                Delete
               </button>
             </div>
           </header>
 
           <div className="node-meta inspector-metrics">
-            <Stat label="熟练度" value={cardsForNode(node)[0].ef.toFixed(2)} />
-            <Stat label="卡片" value={cardsForNode(node).length} />
-            <Stat label="待复习" value={cardsForNode(node).filter((card) => isDue(card)).length} />
+            <Stat label="Ease" value={cardsForNode(node)[0].ef.toFixed(2)} />
+            <Stat label="Cards" value={cardsForNode(node).length} />
+            <Stat label="Due" value={cardsForNode(node).filter((card) => isDue(card)).length} />
           </div>
 
           <section className="inspector-section">
@@ -957,12 +974,12 @@ function NodeDetail({ node, onClose, onUpdate, onDelete }) {
             <div className="card-fields">
               {cardsForNode(node).map((card, index) => (
                 <div key={card.id}>
-                  <span>卡片 {index + 1}</span>
+                  <span>Card {index + 1}</span>
                   <strong>{card.question}</strong>
                   <MarkdownText text={card.answer} />
                   {card.codeExample ? <pre>{card.codeExample}</pre> : null}
                   <small>
-                    {isDue(card) ? "今天到期" : daysUntil(card.nextReview)} · 已复习 {card.repetitions} 次
+                    {isDue(card) ? "Due today" : daysUntil(card.nextReview)} · reviewed {card.repetitions} times
                   </small>
                 </div>
               ))}
@@ -1075,9 +1092,9 @@ function GraphView({
 
   return (
     <section className="surface graph-view">
-      <div className="map-switcher" aria-label="当前思维导图">
+      <div className="map-switcher" aria-label="Current mind map">
         <FilterDropdown
-          label="图谱"
+          label="Map"
           value={currentMap?.id || ""}
           options={maps.map((map) => ({ value: map.id, label: map.title }))}
           onChange={onLoadMap}
@@ -1089,12 +1106,12 @@ function GraphView({
             <input
               value={newMapTitle}
               onChange={(event) => setNewMapTitle(event.target.value)}
-              placeholder="新图谱名称"
+              placeholder="New map name"
               autoFocus
             />
             <button className="inspector-action" type="submit" disabled={!newMapTitle.trim() || submittingMap}>
               {submittingMap ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-              保存
+              Save
             </button>
             <button
               className="icon-button"
@@ -1103,7 +1120,7 @@ function GraphView({
                 setCreatingMap(false);
                 setNewMapTitle("");
               }}
-              aria-label="取消新建"
+              aria-label="Cancel new map"
             >
               <X size={14} />
             </button>
@@ -1111,18 +1128,18 @@ function GraphView({
         ) : (
           <button className="inspector-action" onClick={() => setCreatingMap(true)}>
             <Plus size={14} />
-            新建
+            New
           </button>
         )}
         {fileActionsAvailable ? (
-          <div className="map-file-actions" aria-label="导图文件操作">
+          <div className="map-file-actions" aria-label="Map file actions">
             <button
               className="icon-button map-file-button"
               type="button"
               onClick={() => runFileAction("open", onOpenMapFile)}
               disabled={Boolean(fileAction)}
-              aria-label="打开 .mindcode.md"
-              title="打开 .mindcode.md"
+              aria-label="Open .mindcode.md"
+              title="Open .mindcode.md"
             >
               {fileAction === "open" ? <Loader2 size={15} className="spin" /> : <FolderOpen size={15} />}
             </button>
@@ -1131,8 +1148,8 @@ function GraphView({
               type="button"
               onClick={() => runFileAction("import", onImportMap)}
               disabled={Boolean(fileAction)}
-              aria-label="导入 .mindcode.md"
-              title="导入 .mindcode.md"
+              aria-label="Import .mindcode.md"
+              title="Import .mindcode.md"
             >
               {fileAction === "import" ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
             </button>
@@ -1141,8 +1158,8 @@ function GraphView({
               type="button"
               onClick={() => runFileAction("export", onExportMap)}
               disabled={Boolean(fileAction)}
-              aria-label="导出 .mindcode.md"
-              title="导出 .mindcode.md"
+              aria-label="Export .mindcode.md"
+              title="Export .mindcode.md"
             >
               {fileAction === "export" ? <Loader2 size={15} className="spin" /> : <Download size={15} />}
             </button>
@@ -1163,8 +1180,8 @@ function GraphView({
       {!filtered.nodes.length ? (
         <div className="graph-empty">
           <Search size={34} />
-          <h3>还没有概念</h3>
-          <p>添加概念后会显示在这里。</p>
+          <h3>No concepts yet</h3>
+          <p>Add a concept and it will appear here.</p>
         </div>
       ) : null}
 
@@ -1203,10 +1220,10 @@ function LibraryAnimatedRow({ index, node, dueCount, nextReview, hierarchyDepth 
         {categoryMeta.label}
       </span>
       <span className={dueCount ? "library-due" : "library-next"}>
-        {dueCount ? `${dueCount} 张到期` : daysUntil(nextReview)}
+        {dueCount ? `${dueCount} due` : daysUntil(nextReview)}
       </span>
       <div className="library-actions">
-        <button className="icon-button relation-delete" onClick={() => onDeleteNode(node.id)} aria-label={`删除 ${node.label}`}>
+        <button className="icon-button relation-delete" onClick={() => onDeleteNode(node.id)} aria-label={`Delete ${node.label}`}>
           <Trash2 size={14} />
         </button>
       </div>
@@ -1238,10 +1255,10 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
     return arrangeRowsByHierarchy(flatRows);
   }, [data.nodes, query]);
 
-  // 筛选/排序变化时重置焦点
+  // Reset focus when the filtered or sorted row set changes.
   useEffect(() => { setFocusedIndex(-1); }, [rows]);
 
-  // 键盘导航
+  // Keyboard navigation.
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key === "ArrowDown") {
@@ -1258,7 +1275,7 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [rows, focusedIndex, onOpenNode]);
 
-  // 滚动到焦点行
+  // Scroll the focused row into view.
   useEffect(() => {
     if (focusedIndex < 0 || !tableRef.current) return;
     const el = tableRef.current.querySelectorAll(".library-row")[focusedIndex];
@@ -1273,7 +1290,7 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
           <div className="search-float-wrap">
             <input value={query} onChange={(event) => setQuery(event.target.value)} required />
             <label>
-              {"搜索概念、卡片或来源笔记".split("").map((ch, index) => (
+              {"Search concepts, cards, or source notes".split("").map((ch, index) => (
                 <span key={`${ch}-${index}`} style={{ transitionDelay: `${index * 40}ms` }}>
                   {ch}
                 </span>
@@ -1283,7 +1300,7 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
               className="search-clear"
               type="button"
               onClick={(e) => { e.preventDefault(); setQuery(""); }}
-              aria-label="清除搜索"
+              aria-label="Clear search"
             >
               <X size={10} />
             </button>
@@ -1294,9 +1311,9 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
       {rows.length ? (
         <div className="library-table" ref={tableRef}>
           <div className="library-head">
-            <span>概念</span>
-            <span>分类</span>
-            <span>复习</span>
+            <span>Concept</span>
+            <span>Category</span>
+            <span>Review</span>
             <span />
           </div>
           {rows.map(({ node, dueCount, nextReview, hierarchyDepth }, index) => (
@@ -1316,8 +1333,8 @@ function LibraryView({ data, onOpenNode, onDeleteNode }) {
       ) : (
         <div className="library-empty">
           <Search size={28} />
-          <strong>没有匹配的概念</strong>
-          <span>调整搜索词、分类或复习状态。</span>
+          <strong>No matching concepts</strong>
+          <span>Adjust the search term, category, or review status.</span>
         </div>
       )}
     </section>
@@ -1346,27 +1363,27 @@ function ReviewFlipCard({
           <div className="review-flip-face review-flip-front">
             <span>{cat.label}</span>
             <strong>{card.nodeLabel || card.label}</strong>
-            <small>点击复习</small>
+            <small>Click to review</small>
           </div>
 
           <div className="review-flip-face review-flip-back">
             {reviewMode === "answering" ? (
               <form className="review-flip-back-scroll review-answer-form" onSubmit={onSubmit}>
                 <div className="review-session-field">
-                  <span>问题</span>
+                  <span>Question</span>
                   <strong>{card.question}</strong>
                 </div>
                 <label>
-                  <span>你的答案</span>
+                  <span>Your Answer</span>
                   <textarea
                     value={answerDraft}
                     onChange={(event) => onAnswerChange(event.target.value)}
-                    placeholder="在卡牌背面输入答案"
+                    placeholder="Enter your answer on the back of the card"
                     autoFocus
                   />
                 </label>
                 <button className="review-submit-button" type="submit" disabled={!answerDraft.trim()}>
-                  提交答案
+                  Submit Answer
                 </button>
               </form>
             ) : null}
@@ -1374,16 +1391,16 @@ function ReviewFlipCard({
             {reviewMode === "revealed" && reviewResult ? (
               <div className="review-flip-back-scroll">
                 <div className={`review-result-banner ${reviewResult.isCorrect ? "is-correct" : "is-wrong"}`}>
-                  <span>{reviewResult.isCorrect ? "掌握" : "忘记"}</span>
-                  <strong>{reviewResult.isCorrect ? "答案匹配，已进入掌握间隔。" : "答案不同，已排到明天复习。"}</strong>
+                  <span>{reviewResult.isCorrect ? "Mastered" : "Missed"}</span>
+                  <strong>{reviewResult.isCorrect ? "Answer matched. The card moved into a mastered interval." : "Answer differed. The card is scheduled for tomorrow."}</strong>
                 </div>
                 <div className="review-session-answer">
                   <div className="review-session-field">
-                    <span>你的答案</span>
+                    <span>Your Answer</span>
                     <p>{reviewResult.submittedAnswer}</p>
                   </div>
                   <div className="review-session-field">
-                    <span>正确答案</span>
+                    <span>Correct Answer</span>
                     <MarkdownText text={card.answer} />
                   </div>
                   {card.codeExample ? (
@@ -1393,18 +1410,18 @@ function ReviewFlipCard({
                   ) : null}
                 </div>
                 <div className="review-detail-block">
-                  <span>概念详细</span>
+                  <span>Concept Details</span>
                   <h4>{card.nodeLabel}</h4>
                   <p>{card.desc}</p>
                   <div className="review-detail-stats">
-                    <span>卡片 {card.cardCount}</span>
-                    <span>待复习 {card.dueCount}</span>
-                    <span>已复习 {card.repetitions} 次</span>
+                    <span>{card.cardCount} cards</span>
+                    <span>{card.dueCount} due</span>
+                    <span>{card.repetitions} reviews</span>
                   </div>
                   {card.sourceSummary ? <blockquote>{card.sourceSummary}</blockquote> : null}
                 </div>
                 <button className="review-submit-button" onClick={onContinue}>
-                  继续
+                  Continue
                 </button>
               </div>
             ) : null}
@@ -1531,8 +1548,8 @@ function ReviewView({ dueCards, onRate }) {
       ) : (
         <div className="empty-state">
           <Check size={40} />
-          <h3>今天没有待复习的概念</h3>
-          <p>新增概念会立即进入复习队列。</p>
+          <h3>No concepts due today</h3>
+          <p>New concepts enter the review queue immediately.</p>
         </div>
       )}
     </section>
@@ -1550,6 +1567,8 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   });
   const [noteInput, setNoteInput] = useState("");
   const [extracting, setExtracting] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState(null);
+  const [extractionOutcome, setExtractionOutcome] = useState(null);
   const [committingPreview, setCommittingPreview] = useState(false);
   const [extractError, setExtractError] = useState("");
   const [preview, setPreview] = useState(null);
@@ -1561,6 +1580,22 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [apiKeyMessage, setApiKeyMessage] = useState("");
   const [savingApiKey, setSavingApiKey] = useState(false);
+  const previewRef = useRef(null);
+
+  useEffect(() => {
+    if (!extracting) {
+      setExtractionProgress(null);
+      return undefined;
+    }
+
+    const startedAt = Date.now();
+    setExtractionProgress(extractionProgressForElapsed(0));
+    const interval = window.setInterval(() => {
+      setExtractionProgress(extractionProgressForElapsed(Date.now() - startedAt));
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [extracting]);
 
   useEffect(() => {
     if (!window.mindcode?.getAiConfigStatus) return;
@@ -1570,6 +1605,15 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       .then((status) => setAiConfigStatus(status))
       .catch(() => setAiConfigStatus(null));
   }, []);
+
+  useEffect(() => {
+    if (!preview) return undefined;
+
+    const handle = window.requestAnimationFrame(() => {
+      previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [preview]);
 
   function openApiKeyModal(message = "") {
     setApiKeyDraft("");
@@ -1598,9 +1642,9 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       setAiConfigStatus(status);
       setApiKeyDraft("");
       setApiKeyModalOpen(false);
-      onToast("DashScope API key 已保存");
+      onToast("DashScope API key saved");
     } catch (error) {
-      setApiKeyMessage(`保存失败：${error.message}`);
+      setApiKeyMessage(`Save failed: ${error.message}`);
     } finally {
       setSavingApiKey(false);
     }
@@ -1615,9 +1659,9 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       const status = await window.mindcode.clearAiApiKey();
       setAiConfigStatus(status);
       setApiKeyDraft("");
-      onToast("DashScope API key 已清除", "warning");
+      onToast("DashScope API key cleared", "warning");
     } catch (error) {
-      setApiKeyMessage(`清除失败：${error.message}`);
+      setApiKeyMessage(`Clear failed: ${error.message}`);
     } finally {
       setSavingApiKey(false);
     }
@@ -1670,14 +1714,15 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
 
   async function scanLocalDocuments() {
     if (!window.mindcode?.scanDocuments) {
-      onToast("本地文档扫描需要在桌面 APP 中使用。", "warning");
+      onToast("Local document scanning is available in the desktop app.", "warning");
       return;
     }
 
     setExtractError("");
+    setExtractionOutcome(null);
     const status = aiConfigStatus || (await refreshAiConfigStatus().catch(() => null));
     if (!status?.hasApiKey) {
-      openApiKeyModal("AI 扫描本地文档需要 DashScope API key。保存后请重新扫描。");
+      openApiKeyModal("AI document scanning requires a DashScope API key. Save one, then scan again.");
       return;
     }
 
@@ -1692,19 +1737,20 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       setDocumentSourceText(sourceText);
       setNoteInput(sourceText);
       setPreview(null);
+      setExtractionOutcome(null);
 
       if (!documents.length || !sourceText) {
-        onToast("没有读取到可扫描的文档内容。", "warning");
+        onToast("No scannable document content was found.", "warning");
         return;
       }
 
       if (result.warning) onToast(result.warning, "warning");
-      else onToast(`已扫描 ${documents.length} 个文档`);
+      else onToast(`Scanned ${documents.length} documents`);
     } catch (error) {
       if (errorNeedsApiKey(error)) {
-        openApiKeyModal("AI 扫描本地文档需要 DashScope API key。保存后请重新扫描。");
+        openApiKeyModal("AI document scanning requires a DashScope API key. Save one, then scan again.");
       } else {
-        setExtractError(`扫描文档失败：${error.message}`);
+        setExtractError(`Document scan failed: ${error.message}`);
       }
     } finally {
       setScanningDocuments(false);
@@ -1715,11 +1761,12 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
     const extractionText = noteInput.trim();
     const sourceText = (documentSourceText || noteInput).trim();
     if (!extractionText) {
-      setExtractError("先扫描本地文档，或粘贴笔记/代码片段。");
+      setExtractError("Scan local documents first, or paste notes/code snippets.");
       return;
     }
 
     setExtractError("");
+    setExtractionOutcome(null);
     setExtracting(true);
     try {
       const result = await extractConcepts(
@@ -1742,6 +1789,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       const edges = (result.edges || [])
         .map((edge, index) => ({ ...normalizeEdge(edge, index), selected: true }))
         .filter((edge) => endpointIds.has(edge.from) && endpointIds.has(edge.to));
+      const generatedCardCount = nodes.reduce((total, node) => total + cardsForNode(node).length, 0);
 
       setPreview({
         provider: result.provider || "mock",
@@ -1752,9 +1800,22 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
         edges,
       });
       setPreviewStep(0);
-      if (!nodes.length) onToast("没有提取到新概念，可改用手动建卡。", "warning");
+      setExtractionOutcome(
+        nodes.length
+          ? {
+              type: "success",
+              message: `Draft ready: ${nodes.length} concepts and ${generatedCardCount} review cards generated. Review the draft below.`,
+            }
+          : {
+              type: "warning",
+              message: "No supported concepts were extracted. Try a smaller or more specific document section.",
+            },
+      );
+      if (!nodes.length) onToast("No new concepts were extracted. You can create one manually.", "warning");
     } catch (error) {
-      setExtractError(`提取失败：${error.message}`);
+      const message = `Extraction failed: ${error.message}`;
+      setExtractError(message);
+      setExtractionOutcome({ type: "error", message });
     } finally {
       setExtracting(false);
     }
@@ -1772,6 +1833,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       if (committed) {
         setPreview(null);
         setPreviewStep(0);
+        setExtractionOutcome(null);
         setNoteInput("");
       }
     } finally {
@@ -1795,7 +1857,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
   const manualHasLabel = manualDraft.label.trim().length > 0;
   const manualHasDesc = manualDraft.desc.trim().length > 0;
   const manualHasQuestion = manualDraft.question.trim().length > 0;
-  const previewQuestion = manualDraft.question.trim() || (manualHasLabel ? `如何解释 ${manualDraft.label.trim()}？` : "");
+  const previewQuestion = manualDraft.question.trim() || (manualHasLabel ? `How would you explain ${manualDraft.label.trim()}?` : "");
   const previewAnswer = manualDraft.answer.trim() || manualDraft.desc.trim();
 
   function goToPreviewStep(index) {
@@ -1804,12 +1866,14 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
 
   const currentPreviewNode = preview?.nodes[previewStep] ?? null;
   const isOnEdgesStep = Boolean(preview) && previewStep >= preview.nodes.length;
+  const currentPreviewCards = currentPreviewNode ? cardsForNode(currentPreviewNode) : [];
+  const currentPreviewSource = currentPreviewNode?.sources?.map((source) => source.text).filter(Boolean).join("\n\n") || "";
 
   return (
     <section className="surface add-view">
       <header className="add-workspace-header">
         <span>Add Concept Workspace</span>
-        <h2>新建概念</h2>
+        <h2>Create Concept</h2>
         <p>Scan local documents into a mind map, or add a single concept manually.</p>
       </header>
       <div className="add-workbench">
@@ -1817,7 +1881,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
           <div className="pane-header">
             <div>
               <h3>Scan Local Documents</h3>
-              <p>选择本地文档或文件夹，让 AI 生成一张新的思维导图草稿。</p>
+              <p>Select local documents or folders and let AI generate a new mind map draft.</p>
             </div>
             <div className="pane-actions">
               {window.mindcode?.getAiConfigStatus ? (
@@ -1828,12 +1892,12 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
               ) : null}
               <button className="secondary-button compact" onClick={scanLocalDocuments} disabled={scanningDocuments}>
                 {scanningDocuments ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
-                {scanningDocuments ? "扫描中" : "选择文档"}
+                {scanningDocuments ? "Scanning" : "Choose Documents"}
               </button>
             </div>
           </div>
           <label>
-            <span>文档内容</span>
+            <span>Document Content</span>
             <textarea
               className="notes-editor"
               value={noteInput}
@@ -1842,14 +1906,14 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                 setDocumentSourceText("");
                 setScannedDocuments([]);
               }}
-              placeholder="选择本地文档后会自动填入内容。也可以直接粘贴文本生成草稿。"
+              placeholder="Content appears here after you choose local documents. You can also paste text to generate a draft."
             />
           </label>
           {scannedDocuments.length ? (
-            <section className="local-document-sync" aria-label="本地文档扫描">
+            <section className="local-document-sync" aria-label="Local document scan">
               <div className="local-document-sync-summary">
                 <strong>Local Documents</strong>
-                <span>已读取 {scannedDocuments.length} 个文件</span>
+                <span>{scannedDocuments.length} files loaded</span>
               </div>
               <div className="local-document-list">
                 {scannedDocuments.slice(0, 12).map((document) => {
@@ -1863,7 +1927,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                         <strong>{displayName}</strong>
                         {showRelativePath ? <small className={isDuplicateName ? "is-duplicate-path" : ""}>{relativePath}</small> : null}
                         <small>
-                          {document.text.length} 字符{document.truncated ? " · 已截断" : ""}
+                          {document.text.length} chars{document.truncated ? " · truncated" : ""}
                         </small>
                       </span>
                     </div>
@@ -1872,39 +1936,62 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
               </div>
             </section>
           ) : null}
-          {extractError ? <p className="inline-warning">{extractError}</p> : null}
+          {extractError && extractionOutcome?.type !== "error" ? <p className="inline-warning">{extractError}</p> : null}
           <div className="action-row">
             <button className="primary-button ai-action" onClick={buildPreview} disabled={extracting || !noteInput.trim()}>
               {extracting ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
               {extracting ? "Generating" : "Generate Mind Map Draft"}
             </button>
           </div>
+          {extracting && extractionProgress ? (
+            <div className="extraction-progress" role="status" aria-live="polite">
+              <div className="extraction-progress-meta">
+                <span>{extractionProgress.message}</span>
+                <strong>{extractionProgress.percent}%</strong>
+              </div>
+              <div
+                className="extraction-progress-track"
+                role="progressbar"
+                aria-label="AI extraction progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={extractionProgress.percent}
+              >
+                <span style={{ width: `${extractionProgress.percent}%` }} />
+              </div>
+            </div>
+          ) : null}
+          {!extracting && extractionOutcome ? (
+            <div className={`extraction-result is-${extractionOutcome.type}`} role={extractionOutcome.type === "error" ? "alert" : "status"}>
+              {extractionOutcome.message}
+            </div>
+          ) : null}
         </div>
 
         <div className="add-pane manual-pane">
           <div className="pane-header">
             <div>
               <h3>Quick Create</h3>
-              <p>快速创建一个概念，并生成第一张复习卡。</p>
+              <p>Quickly create a concept and its first review card.</p>
             </div>
           </div>
           <div className="manual-fields">
             <label>
-              <span>概念名称</span>
+              <span>Concept Name</span>
               <input
                 value={manualDraft.label}
                 onChange={(event) => setManualDraft({ ...manualDraft, label: event.target.value })}
-                placeholder="例如：Promise.all"
+                placeholder="Example: Promise.all"
                 autoComplete="off"
               />
             </label>
 
             <label>
-              <span>父级概念 <em>可选</em></span>
+              <span>Parent Concept <em>Optional</em></span>
               <FilterDropdown
                 value={manualDraft.parentId}
                 options={[
-                  { value: "", label: "无父级 · 中心/独立主题" },
+                  { value: "", label: "No parent · root/standalone topic" },
                   ...parentOptions.map((node) => ({ value: node.id, label: node.label })),
                 ]}
                 onChange={(value) => setManualDraft({ ...manualDraft, parentId: value })}
@@ -1920,11 +2007,11 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.18 }}
                 >
-                  <span>解释</span>
+                  <span>Explanation</span>
                   <textarea
                     value={manualDraft.desc}
                     onChange={(event) => setManualDraft({ ...manualDraft, desc: event.target.value })}
-                    placeholder="一句话说明这个概念。"
+                    placeholder="Explain this concept in one sentence."
                   />
                 </motion.label>
               )}
@@ -1939,19 +2026,19 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   transition={{ duration: 0.18 }}
                 >
                   <label>
-                    <span>复习问题 <em>可选</em></span>
+                    <span>Review Question <em>Optional</em></span>
                     <textarea
                       value={manualDraft.question}
                       onChange={(event) => setManualDraft({ ...manualDraft, question: event.target.value })}
-                      placeholder={`如何解释 ${manualDraft.label.trim()}？`}
+                      placeholder={`How would you explain ${manualDraft.label.trim()}?`}
                     />
                   </label>
                   <label>
-                    <span>卡片答案 <em>可选</em></span>
+                    <span>Card Answer <em>Optional</em></span>
                     <textarea
                       value={manualDraft.answer}
                       onChange={(event) => setManualDraft({ ...manualDraft, answer: event.target.value })}
-                      placeholder="留空时使用解释。"
+                      placeholder="Leave blank to use the explanation."
                     />
                   </label>
                 </motion.div>
@@ -1965,12 +2052,12 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.18 }}
                 >
-                  <span>代码示例 <em>可选</em></span>
+                  <span>Code Example <em>Optional</em></span>
                   <textarea
                     className="code-input"
                     value={manualDraft.codeExample}
                     onChange={(event) => setManualDraft({ ...manualDraft, codeExample: event.target.value })}
-                    placeholder="最短可运行示例"
+                    placeholder="Shortest runnable example"
                   />
                 </motion.label>
               )}
@@ -1986,26 +2073,26 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                   exit={{ opacity: 0, scale: 0.96 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <div className="manual-card-preview-label">卡片预览</div>
+                  <div className="manual-card-preview-label">Card Preview</div>
                   <button
                     className={`manual-flip-card ${cardFlipped ? "is-flipped" : ""}`}
                     onClick={() => setCardFlipped((v) => !v)}
-                    aria-label={cardFlipped ? "显示正面" : "翻到背面"}
+                    aria-label={cardFlipped ? "Show front" : "Flip to back"}
                   >
                     <span className="manual-flip-inner">
                       <span className="manual-flip-face manual-flip-front">
-                        <strong>{previewQuestion || "复习问题将显示在这里"}</strong>
+                        <strong>{previewQuestion || "The review question will appear here"}</strong>
                         <small>{manualDraft.label.trim()}</small>
                         <i />
                       </span>
                       <span className="manual-flip-face manual-flip-back">
                         <strong>{manualDraft.label.trim()}</strong>
-                        <span>{previewAnswer || "答案将显示在这里"}</span>
+                        <span>{previewAnswer || "The answer will appear here"}</span>
                         {manualDraft.codeExample.trim() ? <code>{manualDraft.codeExample.trim()}</code> : null}
                       </span>
                     </span>
                   </button>
-                  <div className="manual-card-hint">{cardFlipped ? "正面" : "背面"} · 点击翻转</div>
+                  <div className="manual-card-hint">{cardFlipped ? "Front" : "Back"} · click to flip</div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -2021,28 +2108,28 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
       </div>
 
       {preview ? (
-        <div className="extraction-preview">
+        <div className="extraction-preview" ref={previewRef}>
           <div className="pane-header">
             <div>
               <h3>Draft Preview</h3>
-              <p>逐个确认概念，再写入知识图谱。</p>
+              <p>Review each concept before writing it to the knowledge graph.</p>
             </div>
             <div className="preview-stepper-nav">
               <span className="preview-step-count">
-                {isOnEdgesStep ? "确认写入" : `${previewStep + 1} / ${preview.nodes.length}`}
+                {isOnEdgesStep ? "Confirm Write" : `${previewStep + 1} / ${preview.nodes.length}`}
               </span>
               <button
                 className="icon-button"
                 onClick={() => goToPreviewStep(previewStep - 1)}
                 disabled={previewStep === 0}
-                aria-label="上一个"
+                aria-label="Previous"
               >
                 ‹
               </button>
               <button
                 className="icon-button"
                 onClick={() => goToPreviewStep(previewStep + 1)}
-                aria-label="下一个"
+                aria-label="Next"
                 disabled={isOnEdgesStep}
               >
                 ›
@@ -2063,13 +2150,13 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
               >
                 {currentPreviewNode.duplicate ? (
                   <div className="preview-duplicate-banner">
-                    <span>与已有概念重名</span>
+                    <span>Matches an existing concept</span>
                     <FilterDropdown
                       value={currentPreviewNode.mergeMode}
                       options={[
-                        { value: "skip", label: "跳过" },
-                        { value: "append-card", label: "附加卡片到已有概念" },
-                        { value: "new", label: "改名后新建" },
+                        { value: "skip", label: "Skip" },
+                        { value: "append-card", label: "Append card to existing concept" },
+                        { value: "new", label: "Rename and create new" },
                       ]}
                       onChange={(value) =>
                         patchPreviewNode(currentPreviewNode.id, {
@@ -2082,11 +2169,11 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                 ) : null}
                 <div className="preview-fields">
                   <label>
-                    <span>名称</span>
+                    <span>Name</span>
                     <input value={currentPreviewNode.label} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { label: event.target.value })} />
                   </label>
                   <label>
-                    <span>分类</span>
+                    <span>Category</span>
                     <FilterDropdown
                       value={currentPreviewNode.category}
                       options={categoryOptions}
@@ -2094,11 +2181,11 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                     />
                   </label>
                   <label>
-                    <span>父级概念</span>
+                    <span>Parent Concept</span>
                     <FilterDropdown
                       value={currentPreviewNode.parentId || ""}
                       options={[
-                        { value: "", label: "无父级 · 中心/独立主题" },
+                        { value: "", label: "No parent · root/standalone topic" },
                         ...previewEndpointOptions
                           .filter((node) => node.id !== currentPreviewNode.id)
                           .map((node) => ({ value: node.id, label: node.label })),
@@ -2107,17 +2194,35 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                     />
                   </label>
                   <label>
-                    <span>解释</span>
+                    <span>Explanation</span>
                     <textarea value={currentPreviewNode.desc} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { desc: event.target.value })} />
                   </label>
+                  {currentPreviewSource ? (
+                    <div className="preview-source-summary">
+                      <span>Source Summary</span>
+                      <p>{currentPreviewSource}</p>
+                    </div>
+                  ) : null}
                   <label>
-                    <span>复习问题</span>
-                    <textarea value={currentPreviewNode.question} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { question: event.target.value })} placeholder="复习问题" />
+                    <span>Review Question</span>
+                    <textarea value={currentPreviewNode.question} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { question: event.target.value })} placeholder="Review question" />
                   </label>
                   <label>
-                    <span>卡片答案</span>
-                    <textarea value={currentPreviewNode.answer} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { answer: event.target.value })} placeholder="卡片答案" />
+                    <span>Card Answer</span>
+                    <textarea value={currentPreviewNode.answer} onChange={(event) => patchPreviewNode(currentPreviewNode.id, { answer: event.target.value })} placeholder="Card answer" />
                   </label>
+                  {currentPreviewCards.length > 1 ? (
+                    <div className="preview-card-list">
+                      <span>Generated Cards ({currentPreviewCards.length})</span>
+                      {currentPreviewCards.map((card, index) => (
+                        <article key={card.id}>
+                          <strong>Card {index + 1}</strong>
+                          <p>{card.question}</p>
+                          <small>{card.answer}</small>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="preview-step-actions">
                   <button
@@ -2128,7 +2233,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                     }}
                   >
                     <Check size={15} />
-                    接受
+                    Accept
                   </button>
                   <button
                     className={`preview-decision-btn ${!currentPreviewNode.selected && currentPreviewNode.mergeMode !== "append-card" ? "is-skip" : ""}`}
@@ -2138,7 +2243,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                     }}
                   >
                     <X size={15} />
-                    跳过
+                    Skip
                   </button>
                 </div>
               </motion.div>
@@ -2151,7 +2256,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                 exit={{ opacity: 0, x: -18 }}
                 transition={{ duration: 0.16 }}
               >
-                <strong className="preview-step-label">关系 ({preview.edges.length})</strong>
+                <strong className="preview-step-label">Relations ({preview.edges.length})</strong>
                 {preview.edges.length ? (
                   <div className="preview-edge-list">
                     {preview.edges.map((edge) => (
@@ -2160,7 +2265,7 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                           type="checkbox"
                           checked={edge.selected}
                           onChange={(event) => patchPreviewEdge(edge.id, { selected: event.target.checked })}
-                          aria-label={`写入关系 ${edge.label}`}
+                          aria-label={`Write relation ${edge.label}`}
                         />
                         <FilterDropdown
                           value={edge.from}
@@ -2177,15 +2282,15 @@ function AddView({ data, onAdd, onAcceptExtraction, onToast }) {
                     ))}
                   </div>
                 ) : (
-                  <p className="relation-empty">没有提取到关系，入库后可在节点详情里手动连接。</p>
+                  <p className="relation-empty">No relations were extracted. You can connect nodes manually in the details panel after saving.</p>
                 )}
                 <div className="preview-actions">
-                  <button className="secondary-button" onClick={() => { setPreview(null); setPreviewStep(0); }} disabled={committingPreview}>
-                    丢弃草稿
+                  <button className="secondary-button" onClick={() => { setPreview(null); setPreviewStep(0); setExtractionOutcome(null); }} disabled={committingPreview}>
+                    Discard Draft
                   </button>
                   <button className="primary-button" onClick={acceptPreview} disabled={!previewWillWrite || committingPreview}>
                     {committingPreview ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-                    {committingPreview ? "写入中" : "确认写入"}
+                    {committingPreview ? "Writing" : "Confirm Write"}
                   </button>
                 </div>
               </motion.div>
@@ -2249,7 +2354,7 @@ export function App() {
         if (cancelled) return;
         setLoaded(true);
         skipSave.current = true;
-        showToast(`加载失败，已使用示例数据：${error.message}`, "warning");
+        showToast(`Load failed. Sample data is being used: ${error.message}`, "warning");
       });
     return () => {
       cancelled = true;
@@ -2272,11 +2377,11 @@ export function App() {
             setAvailableMaps((maps) => {
               const byId = new Map(maps.map((map) => [map.id, map]));
               byId.set(result.map.id, result.map);
-              return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, "zh-Hans-CN"));
+              return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, "en-US"));
             });
           }
         })
-        .catch((error) => showToast(`保存失败：${error.message}`, "warning"));
+        .catch((error) => showToast(`Save failed: ${error.message}`, "warning"));
     }, 250);
     saveHandle.current = handle;
 
@@ -2304,9 +2409,9 @@ export function App() {
         setSelectedId(null);
         localStorage.setItem(currentMapStorageKey, result.map.id);
         if (window.mindcode?.listMaps) await reloadMaps();
-        showToast(`已打开 ${result.map.title}`);
+        showToast(`Opened ${result.map.title}`);
       } catch (error) {
-        showToast(`打开失败：${error.message}`, "warning");
+        showToast(`Open failed: ${error.message}`, "warning");
       }
     },
     [reloadMaps, showToast],
@@ -2316,7 +2421,7 @@ export function App() {
     async (mapId) => {
       const map = availableMaps.find((item) => item.id === mapId);
       if (!map || !window.mindcode?.deleteMap) return;
-      const message = map.external ? `从最近打开列表移除「${map.title}」？原文件不会被删除。` : `删除图谱「${map.title}」？此操作无法撤销。`;
+      const message = map.external ? `Remove "${map.title}" from recent maps? The original file will not be deleted.` : `Delete map "${map.title}"? This cannot be undone.`;
       if (!window.confirm(message)) return;
 
       try {
@@ -2329,7 +2434,7 @@ export function App() {
         const maps = result.maps || [];
         setAvailableMaps(maps);
         if (currentMap?.id !== mapId) {
-          showToast(map.external ? `已移除 ${map.title}` : `已删除 ${map.title}`);
+          showToast(map.external ? `Removed ${map.title}` : `Deleted ${map.title}`);
           return;
         }
 
@@ -2340,7 +2445,7 @@ export function App() {
               normalizeNode({
                 label: "MindCode",
                 category: "core",
-                desc: "新的思维导图中心主题。",
+                desc: "New mind map root topic.",
               }),
             ],
             edges: [],
@@ -2352,7 +2457,7 @@ export function App() {
           setAvailableMaps(created.map ? [created.map] : []);
           setSelectedId(created.data.nodes[0]?.id || null);
           localStorage.setItem(currentMapStorageKey, created.map.id);
-          showToast(map.external ? `已移除 ${map.title}，已创建新的空白图谱` : `已删除 ${map.title}，已创建新的空白图谱`);
+          showToast(map.external ? `Removed ${map.title} and created a new blank map` : `Deleted ${map.title} and created a new blank map`);
           return;
         }
         const loadedMap = await window.mindcode.loadMap({ id: nextMap.id });
@@ -2361,9 +2466,9 @@ export function App() {
         setCurrentMap(loadedMap.map);
         setSelectedId(null);
         localStorage.setItem(currentMapStorageKey, loadedMap.map.id);
-        showToast(map.external ? `已移除 ${map.title}` : `已删除 ${map.title}`);
+        showToast(map.external ? `Removed ${map.title}` : `Deleted ${map.title}`);
       } catch (error) {
-        showToast(`删除失败：${error.message}`, "warning");
+        showToast(`Delete failed: ${error.message}`, "warning");
       }
     },
     [availableMaps, currentMap, showToast],
@@ -2381,7 +2486,7 @@ export function App() {
       setAvailableMaps((maps) => {
         const byId = new Map(maps.map((map) => [map.id, map]));
         byId.set(result.map.id, result.map);
-        return [...byId.values()].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0) || left.title.localeCompare(right.title, "zh-Hans-CN"));
+        return [...byId.values()].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0) || left.title.localeCompare(right.title, "en-US"));
       });
       localStorage.setItem(currentMapStorageKey, result.map.id);
       showToast(`${messagePrefix} ${result.map.title}`);
@@ -2394,12 +2499,12 @@ export function App() {
     try {
       const result = await openMindMapFile();
       if (result?.browserOnly) {
-        showToast("浏览器预览不支持打开本地导图文件", "warning");
+        showToast("The browser preview cannot open local map files.", "warning");
         return;
       }
-      if (!result?.canceled) openMapResult(result, "已打开");
+      if (!result?.canceled) openMapResult(result, "Opened");
     } catch (error) {
-      showToast(`打开失败：${error.message}`, "warning");
+      showToast(`Open failed: ${error.message}`, "warning");
     }
   }, [openMapResult, showToast]);
 
@@ -2407,12 +2512,12 @@ export function App() {
     try {
       const result = await importMindMapFile();
       if (result?.browserOnly) {
-        showToast("浏览器预览不支持导入本地导图文件", "warning");
+        showToast("The browser preview cannot import local map files.", "warning");
         return;
       }
-      if (!result?.canceled) openMapResult(result, "已导入");
+      if (!result?.canceled) openMapResult(result, "Imported");
     } catch (error) {
-      showToast(`导入失败：${error.message}`, "warning");
+      showToast(`Import failed: ${error.message}`, "warning");
     }
   }, [openMapResult, showToast]);
 
@@ -2420,12 +2525,12 @@ export function App() {
     try {
       const result = await exportMindMapFile(currentMap, data);
       if (result?.browserOnly) {
-        showToast("浏览器预览已保存当前导图缓存", "warning");
+        showToast("The browser preview saved the current map cache.", "warning");
         return;
       }
-      if (!result?.canceled) showToast("已导出 .mindcode.md");
+      if (!result?.canceled) showToast("Exported .mindcode.md");
     } catch (error) {
-      showToast(`导出失败：${error.message}`, "warning");
+      showToast(`Export failed: ${error.message}`, "warning");
     }
   }, [currentMap, data, showToast]);
 
@@ -2436,7 +2541,7 @@ export function App() {
           normalizeNode({
             label: title,
             category: "core",
-            desc: "新的思维导图中心主题。",
+            desc: "New mind map root topic.",
           }),
         ],
         edges: [],
@@ -2450,10 +2555,10 @@ export function App() {
         setSelectedId(result.data.nodes[0]?.id || null);
         setView("graph");
         localStorage.setItem(currentMapStorageKey, result.map.id);
-        showToast(`已创建 ${result.map.title}`);
+        showToast(`Created ${result.map.title}`);
         return true;
       } catch (error) {
-        showToast(`创建失败：${error.message}`, "warning");
+        showToast(`Create failed: ${error.message}`, "warning");
         return false;
       }
     },
@@ -2478,13 +2583,13 @@ export function App() {
       ),
       updatedAt: timestamp,
     }));
-    showToast("概念已更新");
+    showToast("Concept updated");
   };
 
   const deleteNode = (nodeId) => {
     const node = data.nodes.find((item) => item.id === nodeId);
     if (!node) return;
-    const confirmed = window.confirm(`删除「${node.label}」？相关关系也会一并删除。`);
+    const confirmed = window.confirm(`Delete "${node.label}"? Related relations will also be removed.`);
     if (!confirmed) return;
     setData((previous) => ({
       ...previous,
@@ -2493,7 +2598,7 @@ export function App() {
       updatedAt: Date.now(),
     }));
     setSelectedId(null);
-    showToast("概念已删除");
+    showToast("Concept deleted");
   };
 
   const openNodeInGraph = (nodeId) => {
@@ -2521,7 +2626,7 @@ export function App() {
 
   const handleAdd = ({ label, parentId, desc, question, answer, codeExample }) => {
     if (!label) {
-      showToast("无法添加：请填写概念名称", "warning");
+      showToast("Cannot add: enter a concept name", "warning");
       return false;
     }
 
@@ -2537,7 +2642,7 @@ export function App() {
       `concept-${Date.now()}`,
     );
     if (data.nodes.some((node) => node.id === newNode.id)) {
-      showToast("无法添加：已有同名概念", "warning");
+      showToast("Cannot add: a concept with this name already exists", "warning");
       return false;
     }
 
@@ -2548,13 +2653,12 @@ export function App() {
     }));
     setView("graph");
     setSelectedId(newNode.id);
-    showToast("概念已添加");
+    showToast("Concept added");
     return true;
   };
 
   const acceptExtraction = async ({ nodes, edges, sourceText }) => {
     const timestamp = Date.now();
-    const sourceSnippet = String(sourceText || "").slice(0, 4000);
     const acceptedIds = new Map();
     const acceptedNodes = [];
 
@@ -2564,16 +2668,16 @@ export function App() {
         {
           ...node,
           id: undefined,
-          sources: sourceSnippet ? [...node.sources, { text: sourceSnippet, createdAt: timestamp }] : node.sources,
+          sources: sourcesForAcceptedNode(node, sourceText, timestamp),
         },
-          `extracted-${index}`,
+        `extracted-${index}`,
       );
       acceptedIds.set(node.id, next.id);
       acceptedNodes.push(next);
     });
 
     if (!acceptedNodes.length) {
-      showToast("草稿里没有可写入的新概念", "warning");
+      showToast("The draft has no new concepts to write.", "warning");
       return false;
     }
 
@@ -2623,10 +2727,10 @@ export function App() {
       setView("graph");
       setSelectedId(result.data.nodes[0]?.id || null);
       localStorage.setItem(currentMapStorageKey, result.map.id);
-      showToast(`已生成新思维导图：${result.map.title}`);
+      showToast(`Generated new mind map: ${result.map.title}`);
       return true;
     } catch (error) {
-      showToast(`创建思维导图失败：${error.message}`, "warning");
+      showToast(`Failed to create mind map: ${error.message}`, "warning");
       return false;
     }
   };

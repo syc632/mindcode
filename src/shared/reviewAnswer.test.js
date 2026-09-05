@@ -11,15 +11,15 @@ describe("review answer matching", () => {
   });
 
   it("matches multiline answers when normalized text is equal", () => {
-    expect(isReviewAnswerMatch("事件循环\n协调任务", "事件循环 协调任务")).toBe(true);
+    expect(isReviewAnswerMatch("event loop\ncoordinates tasks", "event loop coordinates tasks")).toBe(true);
   });
 
   it("rejects empty input", () => {
-    expect(isReviewAnswerMatch("", "正确答案")).toBe(false);
-    expect(isReviewAnswerMatch("   ", "正确答案")).toBe(false);
+    expect(isReviewAnswerMatch("", "correct answer")).toBe(false);
+    expect(isReviewAnswerMatch("   ", "correct answer")).toBe(false);
   });
 
   it("rejects different answers", () => {
-    expect(isReviewAnswerMatch("宏任务", "微任务")).toBe(false);
+    expect(isReviewAnswerMatch("macrotask", "microtask")).toBe(false);
   });
 });

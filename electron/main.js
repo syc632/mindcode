@@ -45,7 +45,7 @@ function aiConfigPath() {
 
 async function readStoredAiConfig() {
   try {
-    const raw = await readUtf8FileWithinLimit(aiConfigPath(), aiConfigFileByteLimit, "AI 配置文件");
+    const raw = await readUtf8FileWithinLimit(aiConfigPath(), aiConfigFileByteLimit, "AI config file");
     return normalizeAiConfig(JSON.parse(raw));
   } catch {
     return normalizeAiConfig();
@@ -63,7 +63,7 @@ async function readAiConfig() {
 async function saveAiApiKey(payload) {
   const apiKey = String(payload?.apiKey || "").trim();
   if (apiKey.length > aiApiKeyCharLimit) {
-    throw new Error(`API Key 超过 ${aiApiKeyCharLimit} 字符。`);
+    throw new Error(`API key exceeds ${aiApiKeyCharLimit} characters.`);
   }
   const config = normalizeAiConfig({
     apiKey,
@@ -72,7 +72,7 @@ async function saveAiApiKey(payload) {
 
   await fs.mkdir(path.dirname(aiConfigPath()), { recursive: true });
   const serialized = `${JSON.stringify(config, null, 2)}\n`;
-  assertTextByteLimit(serialized, aiConfigFileByteLimit, "AI 配置文件");
+  assertTextByteLimit(serialized, aiConfigFileByteLimit, "AI config file");
   await fs.writeFile(aiConfigPath(), serialized, { encoding: "utf8", mode: 0o600 });
   await fs.chmod(aiConfigPath(), 0o600).catch(() => {});
   return publicAiConfigStatus(config);
@@ -90,10 +90,10 @@ async function getAiConfigStatus() {
 async function showMissingAiKeyDialog() {
   await dialog.showMessageBox(mainWindow, {
     type: "warning",
-    title: "需要 DashScope API Key",
-    message: "AI 扫描本地文档需要 DashScope API key",
-    detail: "请先在 MindCode 中保存 DashScope API key，然后重新扫描本地文档。",
-    buttons: ["知道了"],
+    title: "DashScope API Key Required",
+    message: "AI local document scanning requires a DashScope API key",
+    detail: "Save a DashScope API key in MindCode, then scan local documents again.",
+    buttons: ["OK"],
   });
   return { ok: true };
 }
@@ -126,7 +126,7 @@ function formatBytes(bytes) {
 
 function assertByteLimit(size, limit, label) {
   if (size > limit) {
-    throw new Error(`${label}超过 ${formatBytes(limit)}，已跳过。`);
+    throw new Error(`${label} exceeds ${formatBytes(limit)} and was skipped.`);
   }
 }
 
@@ -157,7 +157,7 @@ function ensureMindMapExtension(filePath) {
 
 function assertMindMapExtension(filePath) {
   if (!path.basename(String(filePath || "")).endsWith(mapExtension)) {
-    throw new Error("请选择 .mindcode.md 文件。");
+    throw new Error("Please choose a .mindcode.md file.");
   }
 }
 
@@ -175,7 +175,7 @@ function titleFromMapPath(filePath) {
 
 async function readOpenedMapFiles() {
   try {
-    const raw = await readUtf8FileWithinLimit(openedMapsPath(), openedMapsFileByteLimit, "最近打开文件列表");
+    const raw = await readUtf8FileWithinLimit(openedMapsPath(), openedMapsFileByteLimit, "recent map list");
     const filePaths = JSON.parse(raw);
     if (!Array.isArray(filePaths)) return;
     filePaths.forEach((filePath) => {
@@ -191,7 +191,7 @@ async function persistOpenedMapFiles() {
   await fs.mkdir(path.dirname(openedMapsPath()), { recursive: true });
   const filePaths = [...new Set(openedMapFiles.values())].slice(-20);
   const serialized = `${JSON.stringify(filePaths, null, 2)}\n`;
-  assertTextByteLimit(serialized, openedMapsFileByteLimit, "最近打开文件列表");
+  assertTextByteLimit(serialized, openedMapsFileByteLimit, "recent map list");
   await fs.writeFile(openedMapsPath(), serialized, "utf8");
 }
 
@@ -206,7 +206,7 @@ async function registerOpenedMapFile(filePath) {
 
 function mapFilePath(id) {
   const safeId = safeMapId(id);
-  if (!safeId.endsWith(mapExtension)) throw new Error("无效的思维导图文件。");
+  if (!safeId.endsWith(mapExtension)) throw new Error("Invalid mind map file.");
   return path.join(mapsPath(), safeId);
 }
 
@@ -250,7 +250,7 @@ async function createBackup(data, reason = "manual") {
   await fs.mkdir(backupsPath(), { recursive: true });
   const filePath = path.join(backupsPath(), `mindcode-${safeReason}-${fileTimestamp()}.json`);
   const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
-  assertTextByteLimit(serialized, dataFileByteLimit, "备份数据");
+  assertTextByteLimit(serialized, dataFileByteLimit, "backup data");
   await fs.writeFile(filePath, serialized, "utf8");
   await pruneBackups();
   return { ok: true, filePath };
@@ -258,7 +258,7 @@ async function createBackup(data, reason = "manual") {
 
 async function backupCurrentDiskData(reason) {
   try {
-    const raw = await readUtf8FileWithinLimit(dataPath(), dataFileByteLimit, "本地数据文件");
+    const raw = await readUtf8FileWithinLimit(dataPath(), dataFileByteLimit, "local data file");
     return createBackup(JSON.parse(raw), reason);
   } catch (error) {
     if (error.code === "ENOENT") return null;
@@ -275,7 +275,7 @@ async function maybeAutoBackup() {
 
 async function readData() {
   try {
-    const raw = await readUtf8FileWithinLimit(dataPath(), dataFileByteLimit, "本地数据文件");
+    const raw = await readUtf8FileWithinLimit(dataPath(), dataFileByteLimit, "local data file");
     return {
       data: normalizeMindCodeData(JSON.parse(raw)),
       source: "disk",
@@ -284,7 +284,7 @@ async function readData() {
     return {
       data: normalizeMindCodeData(seedData()),
       source: "seed",
-      warning: error.code === "ENOENT" ? null : "本地数据读取失败，已加载内置示例数据。",
+      warning: error.code === "ENOENT" ? null : "Failed to read local data. Built-in sample data was loaded.",
     };
   }
 }
@@ -294,7 +294,7 @@ async function writeData(data, { autoBackup = true } = {}) {
   if (autoBackup) await maybeAutoBackup();
   await fs.mkdir(path.dirname(dataPath()), { recursive: true });
   const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
-  assertTextByteLimit(serialized, dataFileByteLimit, "本地数据文件");
+  assertTextByteLimit(serialized, dataFileByteLimit, "local data file");
   await fs.writeFile(dataPath(), serialized, "utf8");
   return { ok: true };
 }
@@ -306,7 +306,7 @@ async function writeMindMapFile({ id, title, data, create = false }) {
   const fileName = create ? await uniqueMapFileName(mapTitle) : safeMapId(id || safeMapFileName(mapTitle));
   const filePath = path.join(mapsPath(), fileName);
   const serialized = serializeMindMapMarkdown({ title: mapTitle, data: normalized });
-  assertTextByteLimit(serialized, mindMapFileByteLimit, "导图文件");
+  assertTextByteLimit(serialized, mindMapFileByteLimit, "map file");
   await fs.writeFile(filePath, serialized, "utf8");
   const stats = await fs.stat(filePath);
   return { id: fileName, title: mapTitle, filePath, updatedAt: stats.mtimeMs, data: normalized };
@@ -314,7 +314,7 @@ async function writeMindMapFile({ id, title, data, create = false }) {
 
 async function readMindMapTextFile(filePath) {
   const stats = await fs.stat(filePath);
-  assertByteLimit(stats.size, mindMapFileByteLimit, "导图文件");
+  assertByteLimit(stats.size, mindMapFileByteLimit, "map file");
   return { raw: await fs.readFile(filePath, "utf8"), stats };
 }
 
@@ -394,7 +394,7 @@ async function listMindMaps() {
   ).filter(Boolean);
   if (openedMapsChanged) await persistOpenedMapFiles();
   const maps = [...externalMaps, ...storedMaps.filter(Boolean)];
-  maps.sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, "zh-Hans-CN"));
+  maps.sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, "en-US"));
   return { ok: true, maps };
 }
 
@@ -419,7 +419,7 @@ async function saveMindMap(payload) {
     const normalized = normalizeMindCodeData(payload?.data);
     const mapTitle = String(payload?.title || mapTitleFromData(normalized)).trim() || titleFromMapPath(filePath);
     const serialized = serializeMindMapMarkdown({ title: mapTitle, data: normalized });
-    assertTextByteLimit(serialized, mindMapFileByteLimit, "导图文件");
+    assertTextByteLimit(serialized, mindMapFileByteLimit, "map file");
     await fs.writeFile(filePath, serialized, "utf8");
     const stats = await fs.stat(filePath);
     return {
@@ -446,7 +446,7 @@ async function createMindMap(payload) {
         id: title,
         label: title,
         category: "core",
-        desc: "新的思维导图中心主题。",
+        desc: "New mind map root topic.",
       },
     ],
     edges: [],
@@ -459,7 +459,7 @@ async function deleteMindMap(payload) {
   await ensureMindMaps();
   await readOpenedMapFiles();
   const id = payload?.id;
-  if (!id) throw new Error("请选择要删除的思维导图。");
+  if (!id) throw new Error("Please choose a mind map to delete.");
 
   if (openedMapFiles.has(id)) {
     openedMapFiles.delete(id);
@@ -475,7 +475,7 @@ async function exportMindMapFile(payload) {
   const normalized = normalizeMindCodeData(payload?.data);
   const title = String(payload?.title || mapTitleFromData(normalized)).trim() || "MindCode Map";
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: "导出 MindCode 导图",
+    title: "Export MindCode Map",
     defaultPath: safeMapFileName(title),
     filters: mapFileFilters,
   });
@@ -483,14 +483,14 @@ async function exportMindMapFile(payload) {
 
   const filePath = ensureMindMapExtension(result.filePath);
   const serialized = serializeMindMapMarkdown({ title, data: normalized });
-  assertTextByteLimit(serialized, mindMapFileByteLimit, "导图文件");
+  assertTextByteLimit(serialized, mindMapFileByteLimit, "map file");
   await fs.writeFile(filePath, serialized, "utf8");
   return { ok: true, filePath };
 }
 
 async function importMindMapFile() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "导入 MindCode 导图",
+    title: "Import MindCode Map",
     properties: ["openFile"],
     filters: mapFileFilters,
   });
@@ -514,7 +514,7 @@ async function importMindMapFile() {
 
 async function openMindMapFile() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "打开 MindCode 导图",
+    title: "Open MindCode Map",
     properties: ["openFile"],
     filters: mapFileFilters,
   });
@@ -592,7 +592,7 @@ async function collectDocumentFiles(selectedPaths) {
 
 async function extractTextFromDocument(filePath, fileSize = null) {
   const size = Number.isFinite(fileSize) ? fileSize : (await fs.stat(filePath)).size;
-  assertByteLimit(size, documentScanFileByteLimit, "文档文件");
+  assertByteLimit(size, documentScanFileByteLimit, "document file");
   const extension = path.extname(filePath).toLowerCase();
 
   if (textDocumentExtensions.has(extension)) {
@@ -621,7 +621,7 @@ async function extractTextFromDocument(filePath, fileSize = null) {
 
 async function scanDocuments() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "选择要扫描的文档或文件夹",
+    title: "Choose Documents or Folders to Scan",
     properties: ["openFile", "openDirectory", "multiSelections"],
     filters: [
       {
@@ -662,11 +662,11 @@ async function scanDocuments() {
   }
 
   const warnings = [];
-  if (skippedFiles) warnings.push(`已读取前 ${documentScanFileLimit} 个支持的文件。`);
-  if (documents.some((document) => document.truncated)) warnings.push(`超长文档按每个 ${documentScanCharLimit} 字符截断。`);
-  if (totalCharacters >= documentScanTotalCharLimit) warnings.push(`本次扫描总文本已限制在 ${documentScanTotalCharLimit} 字符。`);
-  if (failed.some((item) => item.error?.includes("超过"))) warnings.push(`超过 ${formatBytes(documentScanFileByteLimit)} 的文件已跳过。`);
-  if (failed.length) warnings.push(`${failed.length} 个文件解析失败，已跳过。`);
+  if (skippedFiles) warnings.push(`Only the first ${documentScanFileLimit} supported files were read.`);
+  if (documents.some((document) => document.truncated)) warnings.push(`Long documents were truncated to ${documentScanCharLimit} characters each.`);
+  if (totalCharacters >= documentScanTotalCharLimit) warnings.push(`This scan was limited to ${documentScanTotalCharLimit} total characters.`);
+  if (failed.some((item) => item.error?.includes("exceeds"))) warnings.push(`Files over ${formatBytes(documentScanFileByteLimit)} were skipped.`);
+  if (failed.length) warnings.push(`${failed.length} files could not be parsed and were skipped.`);
 
   return {
     ok: true,
@@ -679,7 +679,7 @@ async function scanDocuments() {
 function normalizeExtractConceptPayload(payload) {
   const text = String(payload?.text || "");
   if (text.length > extractConceptTextLimit) {
-    throw new Error(`提取文本超过 ${extractConceptTextLimit} 字符，请缩小扫描范围后重试。`);
+    throw new Error(`Extraction text exceeds ${extractConceptTextLimit} characters. Reduce the scan scope and try again.`);
   }
   const existingLabels = Array.isArray(payload?.existingLabels)
     ? payload.existingLabels
@@ -746,9 +746,12 @@ ipcMain.handle("extract:concepts", async (_event, payload) => {
     try {
       return await extractWithQwen({ text, existingLabels, apiKey: aiConfig.apiKey, model: aiConfig.model });
     } catch (error) {
+      if (payload?.requireAi) {
+        throw new Error(`Qwen extraction failed: ${error.message}`);
+      }
       return {
         ...(await extractWithMock({ text, existingLabels })),
-        warning: `千问提取失败，已使用离线提取器：${error.message}`,
+        warning: `Qwen extraction failed. Offline extraction was used instead: ${error.message}`,
       };
     }
   }

@@ -70,12 +70,12 @@ export function serializeMindMapMarkdown({ title, data }) {
 export function parseMindMapMarkdown(markdown, fallbackTitle = "MindCode Map") {
   const source = String(markdown || "");
   if (source.length > mindMapMarkdownCharLimit) {
-    throw new Error(`导图 Markdown 超过 ${mindMapMarkdownCharLimit} 字符。`);
+    throw new Error(`Mind map Markdown exceeds ${mindMapMarkdownCharLimit} characters.`);
   }
   const match = source.match(dataBlockPattern);
   if (match) {
     if (match[1].length > mindMapJsonBlockCharLimit) {
-      throw new Error(`导图 JSON 数据块超过 ${mindMapJsonBlockCharLimit} 字符。`);
+      throw new Error(`Mind map JSON data block exceeds ${mindMapJsonBlockCharLimit} characters.`);
     }
     const parsed = JSON.parse(match[1]);
     return {
@@ -94,7 +94,7 @@ export function parseMindMapMarkdown(markdown, fallbackTitle = "MindCode Map") {
     .filter((heading) => heading?.label);
 
   if (headings.length > mindMapHeadingLimit) {
-    throw new Error(`导图标题数量超过 ${mindMapHeadingLimit} 个。`);
+    throw new Error(`Mind map heading count exceeds ${mindMapHeadingLimit}.`);
   }
 
   if (!headings.length) {
@@ -112,7 +112,7 @@ export function parseMindMapMarkdown(markdown, fallbackTitle = "MindCode Map") {
         id,
         label: heading.label,
         parentId,
-        desc: index === 0 ? "Markdown 思维导图中心主题。" : "从 Markdown 标题导入的概念。",
+        desc: index === 0 ? "Markdown mind map root topic." : "Concept imported from a Markdown heading.",
       },
       `markdown-${index}`,
     );

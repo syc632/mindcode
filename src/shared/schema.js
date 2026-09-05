@@ -2,13 +2,76 @@ import { seedData } from "./seedData.js";
 
 export const mindCodeNodeLimit = 1_000;
 export const mindCodeEdgeLimit = 2_000;
-export const mindCodeCardLimit = 50;
+export const mindCodeCardLimit = Infinity;
 export const mindCodeSourceLimit = 50;
 export const mindCodeLabelCharLimit = 120;
 export const mindCodeQuestionCharLimit = 500;
 export const mindCodeTextCharLimit = 4_000;
 export const mindCodeCodeCharLimit = 8_000;
 export const mindCodeCategoryCharLimit = 32;
+
+const legacyDemoTextById = {
+  promise: {
+    question: "How would you explain Promise?",
+    answer: "Represents the eventual completion or failure of an asynchronous operation and its result value.",
+  },
+  "async-await": {
+    question: "How would you explain async/await?",
+    answer: "Promise-based syntax that lets asynchronous code read like synchronous code.",
+  },
+  "event-loop": {
+    question: "How would you explain Event Loop?",
+    answer: "The core JavaScript runtime mechanism that schedules asynchronous tasks.",
+  },
+  closure: {
+    question: "How would you explain Closure?",
+    answer: "A function's ability to remember and access its lexical scope even when executed outside that scope.",
+  },
+  prototype: {
+    question: "How would you explain Prototype Chain?",
+    answer: "JavaScript objects implement inheritance by following the prototype chain.",
+  },
+  microtask: {
+    question: "How would you explain Microtask Queue?",
+    answer: "A high-priority queue where Promise callbacks are scheduled before macrotasks.",
+  },
+};
+
+const legacyDemoEdgeLabelsById = {
+  "edge-promise-async-await": "Sugar",
+  "edge-promise-microtask": "Callbacks",
+  "edge-event-loop-microtask": "Priority",
+  "edge-closure-prototype": "Related",
+};
+
+function hasCjkText(value) {
+  return /[\u4e00-\u9fff]/.test(String(value || ""));
+}
+
+function englishizeLegacyDemoNode(node) {
+  const replacement = legacyDemoTextById[node.id];
+  if (!replacement) return node;
+
+  const cards = node.cards.map((card) => ({
+    ...card,
+    question: hasCjkText(card.question) ? replacement.question : card.question,
+    answer: hasCjkText(card.answer) ? replacement.answer : card.answer,
+  }));
+  const firstCard = cards[0];
+
+  return {
+    ...node,
+    desc: hasCjkText(node.desc) ? replacement.answer : node.desc,
+    question: firstCard?.question ?? node.question,
+    answer: firstCard?.answer ?? node.answer,
+    cards,
+  };
+}
+
+function englishizeLegacyDemoEdge(edge) {
+  const label = legacyDemoEdgeLabelsById[edge.id];
+  return label && hasCjkText(edge.label) ? { ...edge, label } : edge;
+}
 
 function limitedText(value, limit) {
   return String(value || "").trim().slice(0, limit);
@@ -26,13 +89,13 @@ export function slugify(value) {
 
 export function normalizeCard(card, node, fallbackId = "card") {
   const timestamp = Date.now();
-  const nodeLabel = limitedText(node?.label || node?.id || "概念", mindCodeLabelCharLimit);
-  const desc = limitedText(node?.desc || "暂未添加解释。", mindCodeTextCharLimit);
+  const nodeLabel = limitedText(node?.label || node?.id || "Concept", mindCodeLabelCharLimit);
+  const desc = limitedText(node?.desc || "No explanation has been added.", mindCodeTextCharLimit);
   const id = slugify(card?.id || fallbackId) || fallbackId;
 
   return {
     id,
-    question: limitedText(card?.question || node?.question || `如何解释 ${nodeLabel}？`, mindCodeQuestionCharLimit),
+    question: limitedText(card?.question || node?.question || `How would you explain ${nodeLabel}?`, mindCodeQuestionCharLimit),
     answer: limitedText(card?.answer || node?.answer || desc, mindCodeTextCharLimit),
     codeExample: limitedText(card?.codeExample || node?.codeExample || "", mindCodeCodeCharLimit),
     ef: Number(card?.ef ?? node?.ef ?? 2.5),
@@ -48,7 +111,7 @@ export function normalizeNode(node, fallbackId = "concept") {
   const timestamp = Date.now();
   const id = slugify(node?.id || node?.label || fallbackId) || fallbackId;
   const label = limitedText(node?.label || id, mindCodeLabelCharLimit);
-  const desc = limitedText(node?.desc || "暂未添加解释。", mindCodeTextCharLimit);
+  const desc = limitedText(node?.desc || "No explanation has been added.", mindCodeTextCharLimit);
   const parentId = slugify(node?.parentId || "");
   const cardSource = Array.isArray(node?.cards) && node.cards.length ? node.cards : [{}];
   const cards = cardSource.slice(0, mindCodeCardLimit).map((card, index) => normalizeCard(card, { ...node, id, label, desc }, `card-${index + 1}`));
@@ -88,7 +151,7 @@ export function normalizeEdge(edge, index = 0) {
     id: edge?.id || `edge-${from}-${to}-${index}`,
     from,
     to,
-    label: limitedText(edge?.label || "相关", 12),
+    label: limitedText(edge?.label || "Related", 12),
   };
 }
 
@@ -116,7 +179,7 @@ export function normalizeMindCodeData(data) {
   const nodes = normalizedNodes.map((node) => ({
     ...node,
     parentId: idAliases.has(node.parentId) && idAliases.get(node.parentId) !== node.id ? idAliases.get(node.parentId) : "",
-  }));
+  })).map(englishizeLegacyDemoNode);
   const edges = Array.isArray(data.edges)
     ? data.edges
         .slice(0, mindCodeEdgeLimit)
@@ -126,6 +189,7 @@ export function normalizeMindCodeData(data) {
           from: idAliases.get(edge.from) || edge.from,
           to: idAliases.get(edge.to) || edge.to,
         }))
+        .map(englishizeLegacyDemoEdge)
         .filter((edge) => edge.from && edge.to && nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to)
     : [];
 

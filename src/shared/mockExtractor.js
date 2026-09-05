@@ -1,18 +1,18 @@
 import { normalizeEdge, normalizeNode, slugify } from "./schema.js";
 
 const KNOWN_TERMS = [
-  ["Promise.all", "async", "等待多个 Promise 全部完成并返回结果数组。"],
-  ["Promise", "async", "表示异步操作最终完成或失败的对象。"],
-  ["async/await", "async", "用同步风格书写 Promise 异步流程的语法。"],
-  ["Event Loop", "runtime", "协调调用栈、任务队列和微任务队列的运行时机制。"],
-  ["Microtask Queue", "runtime", "保存 Promise 回调等微任务的高优先级队列。"],
-  ["Closure", "core", "函数携带并访问其词法作用域的能力。"],
-  ["Prototype Chain", "core", "对象沿原型链查找属性和方法的继承机制。"],
-  ["React", "tool", "用于构建用户界面的组件化前端库。"],
-  ["useEffect", "tool", "React 中处理副作用和同步外部系统的 Hook。"],
-  ["localStorage", "tool", "浏览器提供的本地键值持久化能力。"],
-  ["Electron", "tool", "用 Web 技术构建跨平台桌面应用的运行框架。"],
-  ["IPC", "runtime", "进程之间传递消息和数据的通信机制。"],
+  ["Promise.all", "async", "Waits for all input Promises to fulfill and returns an array of results."],
+  ["Promise", "async", "An object representing the eventual completion or failure of an asynchronous operation."],
+  ["async/await", "async", "Syntax for writing Promise-based asynchronous flows in a synchronous style."],
+  ["Event Loop", "runtime", "The runtime mechanism that coordinates the call stack, task queue, and microtask queue."],
+  ["Microtask Queue", "runtime", "A high-priority queue that stores microtasks such as Promise callbacks."],
+  ["Closure", "core", "A function's ability to carry and access its lexical scope."],
+  ["Prototype Chain", "core", "The inheritance mechanism where objects look up properties and methods along prototypes."],
+  ["React", "tool", "A component-based frontend library for building user interfaces."],
+  ["useEffect", "tool", "A React Hook for handling side effects and synchronizing with external systems."],
+  ["localStorage", "tool", "Browser-provided local key-value persistence."],
+  ["Electron", "tool", "A runtime framework for building cross-platform desktop apps with web technologies."],
+  ["IPC", "runtime", "A communication mechanism for sending messages and data between processes."],
 ];
 
 function fallbackCandidates(text) {
@@ -20,7 +20,7 @@ function fallbackCandidates(text) {
   return matches
     .filter((term) => !/^(const|let|var|function|return|import|export|from|await|async)$/i.test(term))
     .slice(0, 12)
-    .map((term) => [term, "new", `${term} 是从输入内容中识别出的候选技术概念。`]);
+    .map((term) => [term, "new", `${term} was identified as a candidate technical concept from the input.`]);
 }
 
 export async function extractWithMock({ text, existingLabels = [] }) {
@@ -55,7 +55,7 @@ export async function extractWithMock({ text, existingLabels = [] }) {
       normalizeEdge({
         from: nodes[i - 1].id,
         to: nodes[i].id,
-        label: "相关",
+        label: "Related",
       }, i),
     );
   }

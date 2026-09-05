@@ -9,3 +9,15 @@ src/.claude/
 !.env.example
 coverage/
 release/
+
+# Local drafts, runtime data, and private configuration
+tmp/
+*.local
+*.pem
+*.key
+ai-config.json
+mindcode-data.json
+opened-maps.json
+backups/
+maps/
+*.mindcode.md

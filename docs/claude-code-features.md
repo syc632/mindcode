@@ -92,7 +92,7 @@ brew install --cask claude-code
 进入项目目录后启动：
 
 ```bash
-cd /Users/Admin/Documents/mindcode
+cd /path/to/mindcode
 claude
 ```
 

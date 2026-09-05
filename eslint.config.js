@@ -5,7 +5,7 @@ import react from "eslint-plugin-react";
 export default [
   js.configs.recommended,
   {
-    ignores: ["dist/**", "node_modules/**", ".claude/**", "src/.claude/**"],
+    ignores: ["dist/**", "release/**", "tmp/**", "node_modules/**", ".claude/**", "src/.claude/**"],
   },
   {
     files: ["**/*.{js,jsx,mjs,cjs}"],

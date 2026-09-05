@@ -87,7 +87,7 @@ export function hierarchyEdgesForNodes(nodes) {
             id: `parent-${parentId}-${node.id}`,
             from: parentId,
             to: node.id,
-            label: "包含",
+            label: "Contains",
             level: graphLevelForNode(node),
           }
         : null;
@@ -139,7 +139,7 @@ export function mindMapVisibleNodes(nodes, expandedIds) {
         id: "mindcode-map-root",
         label: "MindCode",
         category: "core",
-        desc: "知识图谱中心",
+        desc: "Knowledge graph center",
         cards: [],
         sources: [],
         graphVirtual: true,

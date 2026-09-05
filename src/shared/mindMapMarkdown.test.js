@@ -9,18 +9,18 @@ describe("mindMapMarkdown", () => {
           id: "ai-systems",
           label: "AI Systems",
           parentId: "",
-          desc: "AI 系统中心主题。",
+          desc: "Root topic for AI systems.",
           sources: [{ text: "local-doc.md", createdAt: 1 }],
-          cards: [{ id: "card-1", question: "什么是 AI Systems？", answer: "围绕模型、数据和评估构建的系统。" }],
+          cards: [{ id: "card-1", question: "What are AI systems?", answer: "Systems built around models, data, and evaluation." }],
         },
         {
           id: "retrieval",
           label: "Retrieval",
           parentId: "ai-systems",
-          desc: "从外部知识中检索上下文。",
+          desc: "Retrieves context from external knowledge.",
         },
       ],
-      edges: [{ id: "legacy-edge", from: "ai-systems", to: "retrieval", label: "兼容旧关系" }],
+      edges: [{ id: "legacy-edge", from: "ai-systems", to: "retrieval", label: "Legacy link" }],
     };
 
     const markdown = serializeMindMapMarkdown({ title: "AI Systems", data });
@@ -30,7 +30,7 @@ describe("mindMapMarkdown", () => {
     expect(parsed.data.nodes).toHaveLength(2);
     expect(parsed.data.nodes.find((node) => node.id === "retrieval")?.parentId).toBe("ai-systems");
     expect(parsed.data.nodes.find((node) => node.id === "ai-systems")?.sources[0].text).toBe("local-doc.md");
-    expect(parsed.data.edges[0].label).toBe("兼容旧关系");
+    expect(parsed.data.edges[0].label).toBe("Legacy link");
   });
 
   it("imports a basic hierarchy from markdown headings without a data block", () => {
@@ -57,6 +57,6 @@ ${" ".repeat(mindMapJsonBlockCharLimit + 1)}
 \`\`\`
 `;
 
-    expect(() => parseMindMapMarkdown(markdown, "Fallback")).toThrow("导图 JSON 数据块超过");
+    expect(() => parseMindMapMarkdown(markdown, "Fallback")).toThrow("Mind map JSON data block exceeds");
   });
 });

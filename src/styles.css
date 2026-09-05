@@ -111,7 +111,7 @@ button {
   padding: 22px 24px 110px;
 }
 
-/* 图谱视图：突破容器限制，铺满整屏 */
+/* Graph view: break out of the container and fill the screen. */
 .app-shell:has(section.graph-view) {
   max-width: none;
   gap: 0;
@@ -129,7 +129,7 @@ button {
   background: var(--surface);
 }
 
-/* 知识库视图：使用和图谱一致的全屏白色画布 */
+/* Library view: use the same full-screen white canvas as the graph. */
 .app-shell:has(section.library-view),
 .app-shell:has(section.review-view),
 .app-shell:has(section.add-view) {
@@ -573,7 +573,7 @@ button {
   position: relative;
 }
 
-/* 图谱视图铺满时，去掉外层圆角和阴影 */
+/* Remove the outer radius and shadow when the graph view fills the screen. */
 .surface.graph-view {
   border-radius: 0;
   box-shadow: none;
@@ -907,7 +907,7 @@ button {
   outline: 0;
 }
 
-/* 清除按钮：有内容才出现 */
+/* Show the clear button only when content exists. */
 .search-clear {
   display: grid;
   place-items: center;
@@ -1644,7 +1644,7 @@ button {
   opacity: 0.52;
 }
 
-/* Add 视图内按钮：暖近黑替代 iOS 蓝，契合纸质感设计语言 */
+/* Add-view buttons: warm near-black instead of iOS blue to match the paper-like design language. */
 .add-view .primary-button {
   background: var(--text);
   border-radius: 16px;
@@ -3197,6 +3197,80 @@ button {
   resize: none;
 }
 
+.preview-source-summary {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  color: var(--text-2);
+  background: rgba(0, 0, 0, 0.035);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+}
+
+.preview-source-summary span {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.preview-source-summary p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.preview-card-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  padding: 12px 14px;
+  overflow: auto;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+}
+
+.preview-card-list > span {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.preview-card-list article {
+  display: grid;
+  gap: 4px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.preview-card-list article:first-of-type {
+  border-top: 0;
+}
+
+.preview-card-list strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.preview-card-list p,
+.preview-card-list small {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.preview-card-list p {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preview-card-list small {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
 .preview-stepper-nav {
   display: flex;
   align-items: center;
@@ -3382,6 +3456,73 @@ button {
   display: flex;
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+.extraction-progress {
+  display: grid;
+  gap: 8px;
+  width: min(360px, 100%);
+  margin: 12px 0 0 auto;
+}
+
+.extraction-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.extraction-progress-meta span {
+  min-width: 0;
+}
+
+.extraction-progress-meta strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-family: var(--mc-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.extraction-progress-track {
+  height: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+}
+
+.extraction-progress-track span {
+  display: block;
+  height: 100%;
+  background: var(--text);
+  border-radius: inherit;
+  transition: width 0.45s ease;
+}
+
+.extraction-result {
+  width: min(420px, 100%);
+  margin: 12px 0 0 auto;
+  padding: 10px 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.extraction-result.is-success {
+  border-color: rgba(26, 112, 72, 0.22);
+}
+
+.extraction-result.is-warning,
+.extraction-result.is-error {
+  color: #7a3b18;
+  border-color: rgba(174, 82, 31, 0.25);
 }
 
 .extraction-preview {

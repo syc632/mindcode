@@ -36,7 +36,7 @@ export function isDue(card, now = Date.now()) {
 
 export function daysUntil(timestamp, now = Date.now()) {
   const days = Math.ceil((timestamp - now) / DAY_MS);
-  if (days <= 0) return "今天到期";
-  if (days === 1) return "明天";
-  return `${days} 天后`;
+  if (days <= 0) return "Due today";
+  if (days === 1) return "Tomorrow";
+  return `In ${days} days`;
 }

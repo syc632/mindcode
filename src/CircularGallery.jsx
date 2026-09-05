@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { categories } from './shared/seedData.js';
 import './CircularGallery.css';
 
-// ── Canvas → 卡片纹理 ─────────────────────────────────────────
+// ── Canvas → card texture ─────────────────────────────────────
 const CARD_BGS = ['#1e1e1c', '#232320', '#272522', '#1b1b19', '#212120'];
 
 function galleryCardKey(card) {
@@ -59,7 +59,7 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
   const ctx = canvas.getContext('2d');
   const isDetail = selected && faceState === 'detail' && detailResult;
   const isQuestion = selected && faceState === 'question';
-  const nodeLabel = card.nodeLabel || card.label || '复习卡片';
+  const nodeLabel = card.nodeLabel || card.label || 'Review Card';
 
   ctx.fillStyle = isDetail ? '#f7f7f4' : CARD_BGS[nodeLabel.charCodeAt(0) % CARD_BGS.length];
   ctx.fillRect(0, 0, W, H);
@@ -75,7 +75,7 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
   ctx.textBaseline = 'middle';
 
   if (isDetail) {
-    const resultLabel = detailResult.isCorrect ? '掌握' : '忘记';
+    const resultLabel = detailResult.isCorrect ? 'Mastered' : 'Missed';
     ctx.fillStyle = detailResult.isCorrect ? '#111111' : '#4a4a4a';
     drawRoundRect(ctx, 248, 72, 204, 58, 29);
     ctx.fill();
@@ -101,7 +101,7 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
 
     ctx.fillStyle = 'rgba(0,0,0,0.24)';
     ctx.font = `24px ${font}`;
-    ctx.fillText('详细信息见右侧', W / 2, H - 72);
+    ctx.fillText('Details on the right', W / 2, H - 72);
     return canvas.toDataURL('image/png');
   }
 
@@ -112,7 +112,7 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
   if (isQuestion) {
     ctx.fillStyle = 'rgba(240, 239, 237, 0.42)';
     ctx.font = `26px ${font}`;
-    ctx.fillText('回答问题', W / 2, 195);
+    ctx.fillText('Answer the question', W / 2, 195);
 
     ctx.fillStyle = 'rgba(240, 239, 237, 0.96)';
     ctx.font = `bold 44px ${font}`;
@@ -120,7 +120,7 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
 
     ctx.fillStyle = 'rgba(240,239,237,0.24)';
     ctx.font = `26px ${font}`;
-    ctx.fillText('在右侧输入答案', W / 2, H - 88);
+    ctx.fillText('Enter your answer on the right', W / 2, H - 88);
     return canvas.toDataURL('image/png');
   }
 
@@ -135,15 +135,15 @@ function cardToDataURL(card, { faceState = 'front', selected = false, detailResu
   const startY = H / 2 - blockH / 2 + lineH / 2;
   lines.forEach((l, i) => ctx.fillText(l, W / 2, startY + i * lineH));
 
-  // 底部提示
+  // Bottom hint.
   ctx.fillStyle = 'rgba(240,239,237,0.18)';
   ctx.font = `26px ${font}`;
-  ctx.fillText('点击复习', W / 2, H - 88);
+  ctx.fillText('Click to review', W / 2, H - 88);
 
   return canvas.toDataURL('image/png');
 }
 
-// ── OGL 工具 ─────────────────────────────────────────────────
+// ── OGL utilities ─────────────────────────────────────────────
 function debounce(fn, wait) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
@@ -156,7 +156,7 @@ function autoBind(inst) {
   });
 }
 
-// ── Media（单张卡片）────────────────────────────────────────
+// ── Media (single card) ───────────────────────────────────────
 class Media {
   constructor({ geometry, gl, image, index, length, renderer, scene, screen, viewport, bend, borderRadius }) {
     this.extra = 0;
@@ -273,11 +273,11 @@ class Media {
   }
 }
 
-// ── App（OGL 控制器）─────────────────────────────────────────
+// ── App (OGL controller) ──────────────────────────────────────
 class App {
   constructor(container, { items, bend, borderRadius, scrollSpeed, scrollEase, selectedIndex = 0, onSelect, onDeselect }) {
     this.container = container;
-    this.items = items;           // 原始卡片数量
+    this.items = items;           // Original card count.
     this.onSelect = onSelect;
     this.onDeselect = onDeselect;
     this.scrollSpeed = scrollSpeed;
@@ -333,7 +333,7 @@ class App {
     this.scroll.last = target;
   }
 
-  // 找当前居中的卡片 index（原始数组）
+  // Find the currently centered card index in the original array.
   getCenteredIndex() {
     if (!this.medias || !this.medias[0] || !this.items.length) return 0;
     const width = this.medias[0].width;
@@ -467,7 +467,7 @@ class App {
   }
 }
 
-// ── React 组件 ───────────────────────────────────────────────
+// ── React component ───────────────────────────────────────────
 export default function CircularGallery({
   cards = [],
   selectedCardKey = '',

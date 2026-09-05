@@ -3,14 +3,14 @@
   "productName": "MindCode",
   "version": "0.1.0",
   "private": true,
-  "description": "MindCode desktop MVP for knowledge graphs, spaced repetition, and concept extraction.",
+  "description": "Local-first knowledge graphs, source-grounded concept extraction, and spaced repetition for technical learning.",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
-    "package:mac": "npm run build && electron-packager . MindCode --platform=darwin --arch=arm64 --out=release --overwrite --prune=true --app-bundle-id=com.mindcode.desktop --icon=build/icon.icns --ignore=^/release$ --ignore=^/\\.git$",
-    "package:win": "npm run build && electron-packager . MindCode --platform=win32 --arch=x64 --out=release --overwrite --prune=true --ignore=^/release$ --ignore=^/\\.git$",
+    "package:mac": "npm run build && electron-packager . MindCode --platform=darwin --arch=arm64 --out=release --overwrite --prune=true --app-bundle-id=com.mindcode.desktop --icon=build/icon.icns --ignore=^/release$ --ignore=^/\\.git$ --ignore=^/tmp$ --ignore=^/\\.claude$ --ignore=^/src/\\.claude$ --ignore=^/\\.env",
+    "package:win": "npm run build && electron-packager . MindCode --platform=win32 --arch=x64 --out=release --overwrite --prune=true --ignore=^/release$ --ignore=^/\\.git$ --ignore=^/tmp$ --ignore=^/\\.claude$ --ignore=^/src/\\.claude$ --ignore=^/\\.env",
     "start": "electron .",
     "test": "vitest run",
     "lint": "eslint ."
@@ -35,5 +35,17 @@
     "typescript": "^5.5.0",
     "vite": "^7.0.0",
     "vitest": "^3.2.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syc632/mindcode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/syc632/mindcode/issues"
+  },
+  "homepage": "https://github.com/syc632/mindcode#readme",
+  "engines": {
+    "node": ">=22.12.0"
   }
 }
